@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
@@ -9,7 +9,7 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls, Statement};
 use tokio_util::sync::CancellationToken;
 
-use crate::{introduce_lag, remove_duplicates, split_vec};
+use crate::{builder::support::QueryHolder, introduce_lag, remove_duplicates, split_vec};
 
 #[async_trait]
 pub trait Upsert<T>: Send + Sync
@@ -57,7 +57,7 @@ pub(crate) struct UpsertQuickStream {
     pub(crate) hundreds: usize,
     pub(crate) db_config: tokio_postgres::Config,
     pub(crate) tls: Option<Certificate>,
-    pub(crate) queries: HashMap<usize, String>,
+    pub(crate) queries: QueryHolder,
     pub(crate) max_records_per_cycle_batch: usize, //a batch = introduced_lag_cycles
     pub(crate) introduced_lag_cycles: usize,
     pub(crate) introduced_lag_in_millies: u64,
@@ -231,7 +231,7 @@ impl UpsertQuickStream {
             let (tx_t, rx_t) = mpsc::channel::<Vec<T>>(self.buffer_size);
     
             let thread_id = tx_count.clone();
-            let query = self.queries.get(&n).unwrap().to_owned();
+            let query = self.queries.get(&n);
             let n_clone = n.clone();
             let self_clone = self.to_owned();
             let handler = tokio::spawn(async move {
@@ -268,7 +268,7 @@ impl UpsertQuickStream {
 
                 let thread_id = tx_count.clone();
                 let n = data.len();
-                let query = self.queries.get(&n).unwrap().to_owned();
+                let query = self.queries.get(&n);
                 let self_clone = Arc::new(self.to_owned());
                 let handler = tokio::spawn(async move {
                     let _ = self_clone.process_n(query, rx_t, thread_id, n).await;

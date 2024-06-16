@@ -1,9 +1,10 @@
-use std::collections::HashMap;
-
 use native_tls::Certificate;
+use support::QueryHolder;
 use tokio_util::sync::CancellationToken;
 
 use crate::upsert::UpsertQuickStream;
+
+pub mod support;
 
 #[derive(Clone)]
 pub struct QuickStreamBuilder {
@@ -15,7 +16,7 @@ pub struct QuickStreamBuilder {
     hundreds: Option<usize>,
     db_config: Option<tokio_postgres::Config>,
     tls: Option<Certificate>,
-    queries: Option<HashMap<usize, String>>,
+    queries: Option<QueryHolder>,
     max_records_per_cycle_batch: Option<usize>, //a batch = introduced_lag_cycles
     introduced_lag_cycles: Option<usize>,
     introduced_lag_in_millies: Option<u64>,
@@ -83,7 +84,7 @@ impl QuickStreamBuilder {
         self
     }
 
-    pub fn queries(&mut self, queries: HashMap<usize, String>) -> &mut Self {
+    pub fn queries(&mut self, queries: QueryHolder) -> &mut Self {
         self.queries = Some(queries);
         self
     }
