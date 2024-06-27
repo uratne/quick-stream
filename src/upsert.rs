@@ -51,7 +51,7 @@ impl<T> UpsertData<T> where T: Upsert<T> + Clone + Send {
 
 #[derive(Default, Clone)]
 #[allow(dead_code)] //for cancellation token, TODO remove when used
-pub(crate) struct UpsertQuickStream {
+pub struct UpsertQuickStream {
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) max_con_count: usize,
     pub(crate) buffer_size: usize,

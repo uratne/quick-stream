@@ -129,7 +129,6 @@ impl QuickStreamBuilder {
         self
     }
 
-    #[allow(private_interfaces)]
     pub fn build_update(self) -> UpsertQuickStream {
         trace!("building UpsertQuickStream from builder");
         UpsertQuickStream {
