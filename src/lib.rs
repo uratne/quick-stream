@@ -1,30 +1,30 @@
 use std::{collections::HashSet, time::Duration};
 
+use log::debug;
 use upsert::Upsert;
 
 pub mod builder;
 pub mod upsert;
 
-
 fn remove_duplicates<T>(data: &mut Vec<T>) where T: Upsert<T> + Clone + Send + 'static {
     let mut hash_set = HashSet::new();
     data.sort_by(|x, y| y.modified_date().cmp(&x.modified_date()));
-    data.retain(|ftp_current| hash_set.insert(ftp_current.pkey().clone()))
+    data.retain(|data| hash_set.insert(data.pkey().clone()))
 }
 
 fn split_vec_by_given<T>(mut data: Vec<T>, hundreds: usize, tens: usize, single_digit: usize) -> Vec<Vec<T>> where T: Upsert<T> + Clone + Send +'static {
     let mut results = vec![];
 
     for _hundred in 0..hundreds {
-        let (ftp_current_1, ftp_current_2) = data.split_at(100);
-        results.push(ftp_current_1.to_vec());
-        data = ftp_current_2.to_vec();
+        let (data_1, data_2) = data.split_at(100);
+        results.push(data_1.to_vec());
+        data = data_2.to_vec();
     }
 
     for _ten in 0..tens {
-        let (ftp_current_1, ftp_current_2) = data.split_at(10);
-        results.push(ftp_current_1.to_vec());
-        data = ftp_current_2.to_vec();
+        let (data_1, data_2) = data.split_at(10);
+        results.push(data_1.to_vec());
+        data = data_2.to_vec();
     }
 
     if single_digit != data.len() {
@@ -37,21 +37,21 @@ fn split_vec_by_given<T>(mut data: Vec<T>, hundreds: usize, tens: usize, single_
     }
 }
 
-fn split_vec<T>(ftp_currents: Vec<T>) -> Vec<Vec<T>> where T: Upsert<T> + Clone + Send + 'static {
-    let hundreds = ftp_currents.len() / 100;
-    let hundreds_remainder = ftp_currents.len() % 100;
+fn split_vec<T>(data: Vec<T>) -> Vec<Vec<T>> where T: Upsert<T> + Clone + Send + 'static {
+    let hundreds = data.len() / 100;
+    let hundreds_remainder = data.len() % 100;
 
     let tens = hundreds_remainder / 10;
     let tens_remainder = hundreds_remainder % 10;
 
 
-    split_vec_by_given(ftp_currents, hundreds, tens, tens_remainder)
+    split_vec_by_given(data, hundreds, tens, tens_remainder)
 }
 
 async fn introduce_lag(lag: u64) {
-    println!("debug introduced lag : {}ms", lag);
+    debug!("introducing lag: {}ms", lag);
     tokio::time::sleep(Duration::from_millis(lag)).await;
-    println!("debug introduced lag over");
+    debug!("introduced lag complete");
 }
 
 

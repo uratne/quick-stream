@@ -1,4 +1,6 @@
+use log::trace;
 use native_tls::Certificate;
+use random_word::Lang;
 use support::QueryHolder;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +23,8 @@ pub struct QuickStreamBuilder {
     introduced_lag_cycles: Option<usize>,
     introduced_lag_in_millies: Option<u64>,
     connection_creation_threshold: Option<f64>,
+    name: Option<String>,
+    print_connection_configuration: bool
 }
 
 impl Default for QuickStreamBuilder {
@@ -39,6 +43,8 @@ impl Default for QuickStreamBuilder {
             introduced_lag_cycles: None,
             introduced_lag_in_millies: None,
             connection_creation_threshold: None,
+            name: Some(format!("{} {}", random_word::gen(Lang::En), random_word::gen(Lang::En))),
+            print_connection_configuration: false
         }
     }
 }
@@ -109,8 +115,23 @@ impl QuickStreamBuilder {
         self
     }
 
+    pub fn name(&mut self, name: String) -> &mut Self {
+        self.name = Some(name);
+        self
+    }
+
+    /**
+     This will print the current connections configuration end of every lag cycle.
+     * ***Default behaviour is to print the current connections confguration iff it changed***
+     */
+    pub fn print_connection_configuration(&mut self) -> &mut Self {
+        self.print_connection_configuration = true;
+        self
+    }
+
     #[allow(private_interfaces)]
     pub fn build_update(self) -> UpsertQuickStream {
+        trace!("building UpsertQuickStream from builder");
         UpsertQuickStream {
             cancellation_token: self.cancellation_token.expect("cancellation_token is None"),
             max_con_count: self.max_con_count.expect("max_con_count is None"),
@@ -124,7 +145,9 @@ impl QuickStreamBuilder {
             max_records_per_cycle_batch: self.max_records_per_cycle_batch.expect("max_records_per_cycle_batch is None"),
             introduced_lag_cycles: self.introduced_lag_cycles.expect("introduced_lag_cycles is None"),
             introduced_lag_in_millies: self.introduced_lag_in_millies.expect("introduced_lag_in_millies is None"),
-            connection_creation_threshold: self.connection_creation_threshold.expect("connection_creation_threshold is None")
+            connection_creation_threshold: self.connection_creation_threshold.expect("connection_creation_threshold is None"),
+            name: self.name.expect("not a possible scenario"),
+            print_con_config: self.print_connection_configuration
         }
     }
 }
