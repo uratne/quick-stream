@@ -43,7 +43,7 @@ impl Default for QuickStreamBuilder {
             introduced_lag_cycles: None,
             introduced_lag_in_millies: None,
             connection_creation_threshold: None,
-            name: Some(format!("{} {}", random_word::gen(Lang::En), random_word::gen(Lang::En))),
+            name: Some(format!("{}_{}", random_word::gen(Lang::En), random_word::gen(Lang::En))),
             print_connection_configuration: false
         }
     }
