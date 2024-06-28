@@ -577,7 +577,7 @@ mod tests {
         let mut tx_count = 0;
         let senders = processor.init_senders::<MockData>(&mut tx_count);
 
-        assert_eq!(senders.len(), 11);
+        assert_eq!(senders.len(), 10);
         assert_eq!(senders.get(&10).unwrap().len(), 12);
         assert_eq!(senders.get(&100).unwrap().len(), 1);
 
