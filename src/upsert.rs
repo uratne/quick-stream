@@ -234,6 +234,9 @@ impl UpsertQuickStream {
         Ok(())
     }
 
+    /**
+     * n is redunt here as n is the same as type_ ***need to remove n***
+     */
     fn init_sender<T>(&self, n: usize, count: usize, tx_count: &mut i64, type_: usize) -> Vec<UpsertData<T>> where T: Upsert<T> + Clone + Send + 'static {
         trace!("{}: initiating sender, creating {} upsert senders", self.name, count);
         let mut senders = vec![];
@@ -475,5 +478,171 @@ impl UpsertQuickStream {
         senders.get(&100).unwrap().len(),
         *tx_count,
         total_senders_percentage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    use futures::future::BoxFuture;
+    use tokio_postgres::{Client, Error, Statement};
+
+    use crate::{builder, introduce_lag, remove_duplicates, split_vec, split_vec_by_given};
+
+    use super::Upsert;
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    struct MockData {
+        id: i64,
+        modified_date: NaiveDateTime,
+    }
+
+    #[async_trait]
+    impl Upsert<MockData> for MockData {
+        fn upsert(
+            _client: &Client,
+            data: Vec<MockData>,
+            _statement: &Statement,
+            _thread_id: i64,
+        ) -> BoxFuture<'static, Result<u64, Error>> {
+            println!("data received, amount : {}", data.len());
+            Box::pin(async { Ok(1) })
+        }
+        
+        fn pkey(&self) -> i64 {
+            self.id
+        }
+
+        fn modified_date(&self) -> NaiveDateTime {
+            self.modified_date
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remove_duplicates() {
+        let mut data = vec![
+            MockData { id: 1, modified_date: DateTime::from_timestamp(1627847280, 0).unwrap().naive_utc() },
+            MockData { id: 1, modified_date: DateTime::from_timestamp(1627847281, 0).unwrap().naive_utc() },
+            MockData { id: 2, modified_date: DateTime::from_timestamp(1627847282, 0).unwrap().naive_utc() },
+        ];
+
+        remove_duplicates(&mut data);
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0].id, 2);
+        assert_eq!(data[1].id, 1);
+    }
+
+    #[test]
+    fn test_split_vec() {
+        let data = (0..110).map(|i| MockData { id: i, modified_date: DateTime::from_timestamp(1627847280, 0).unwrap().naive_utc() }).collect::<Vec<_>>();
+
+        let result = split_vec(data);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].len(), 100);
+        assert_eq!(result[1].len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_introduce_lag() {
+        let start = std::time::Instant::now();
+        introduce_lag(100).await;
+        let duration = start.elapsed();
+        assert!(duration.as_millis() >= 100);
+    }
+
+    #[tokio::test]
+    async fn test_init_sender() {
+        let builder = builder::tests::test_builder();
+        let processor = builder.build_update();
+
+        let n = 7;
+        let count = 10;
+        let mut tx_count = 90;
+        let original_tx_count = tx_count.to_owned();
+        let type_ = 7;
+        let sender = processor.init_sender::<MockData>(n, count, &mut tx_count, type_);
+
+        assert_eq!(tx_count, 100);
+        assert_eq!(sender.len(), 10);
+        assert_eq!(sender.get(0).unwrap().type_, type_);
+        assert_eq!(sender.get(2).unwrap().id, original_tx_count + 2);
+    }
+
+    #[tokio::test]
+    async fn test_init_senders() {
+        let builder = builder::tests::test_builder();
+        let processor = builder.build_update();
+
+        let mut tx_count = 0;
+        let senders = processor.init_senders::<MockData>(&mut tx_count);
+
+        assert_eq!(senders.len(), 11);
+        assert_eq!(senders.get(&10).unwrap().len(), 12);
+        assert_eq!(senders.get(&100).unwrap().len(), 1);
+
+        assert_eq!(senders.get(&3).unwrap().len(), 2);
+        assert_eq!(senders.get(&5).unwrap().get(0).unwrap().type_, 5);
+        assert_eq!(senders.get(&6).unwrap().get(0).unwrap().id, 10);
+    
+        assert_eq!(tx_count, 31); // 2*9 (single digits) + 12 (tens) + 1 (hundreds) = 31
+    }
+
+    #[test]
+    fn test_split_vec_by_given() {
+        let data: Vec<MockData> = (0..250).map(|i| MockData { id: i, modified_date: Utc::now().naive_utc() }).collect();
+        let result = split_vec_by_given(data.clone(), 2, 5, 0);
+
+        assert_eq!(result.len(), 7);
+        assert_eq!(result[0].len(), 100);
+        assert_eq!(result[1].len(), 100);
+        assert_eq!(result[2].len(), 10);
+        assert_eq!(result[3].len(), 10);
+        assert_eq!(result[4].len(), 10);
+        assert_eq!(result[5].len(), 10);
+        assert_eq!(result[6].len(), 10);
+
+        // Ensure the elements are as expected
+        assert_eq!(result[0][0].id, 0);
+        assert_eq!(result[0][99].id, 99);
+        assert_eq!(result[1][0].id, 100);
+        assert_eq!(result[1][99].id, 199);
+        assert_eq!(result[6][0].id, 240);
+        assert_eq!(result[6][9].id, 249);
+    }
+
+    #[test]
+    fn test_split_vec_2() {
+        let data: Vec<MockData> = (0..250).map(|i| MockData { id: i, modified_date: Utc::now().naive_utc() }).collect();
+        let result = split_vec(data.clone());
+
+        assert_eq!(result.len(), 7);
+        assert_eq!(result[0].len(), 100);
+        assert_eq!(result[1].len(), 100);
+        assert_eq!(result[2].len(), 10);
+        assert_eq!(result[3].len(), 10);
+        assert_eq!(result[4].len(), 10);
+        assert_eq!(result[5].len(), 10);
+        assert_eq!(result[6].len(), 10);
+
+        // Ensure the elements are as expected
+        assert_eq!(result[0][0].id, 0);
+        assert_eq!(result[0][99].id, 99);
+        assert_eq!(result[1][0].id, 100);
+        assert_eq!(result[1][99].id, 199);
+        assert_eq!(result[6][0].id, 240);
+        assert_eq!(result[6][9].id, 249);
+    }
+
+    #[test]
+    fn test_split_vec_edge_cases() {
+        let empty_data: Vec<MockData> = vec![];
+        let result = split_vec(empty_data);
+        assert!(result.is_empty());
+
+        let single_data: Vec<MockData> = vec![MockData { id: 1, modified_date: Utc::now().naive_utc() }];
+        let result = split_vec(single_data.clone());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], single_data);
     }
 }
