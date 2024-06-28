@@ -1,3 +1,5 @@
+use std::process::{ExitCode, Termination};
+
 use log::trace;
 use native_tls::Certificate;
 use random_word::Lang;
@@ -46,6 +48,12 @@ impl Default for QuickStreamBuilder {
             name: Some(format!("{}_{}", random_word::gen(Lang::En), random_word::gen(Lang::En))),
             print_connection_configuration: false
         }
+    }
+}
+
+impl Termination for QuickStreamBuilder {
+    fn report(self) -> std::process::ExitCode {
+        ExitCode::SUCCESS
     }
 }
 
@@ -152,14 +160,14 @@ impl QuickStreamBuilder {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tokio_postgres::Config;
     use tokio_util::sync::CancellationToken;
 
     use super::{support::QueryHolder, QuickStreamBuilder};
 
 #[test]
-    fn test_builder() {
+    pub fn test_builder() -> QuickStreamBuilder {
         let cancellation_token = CancellationToken::new();
 
         let db_config = Config::new();
@@ -170,8 +178,8 @@ mod tests {
             .cancellation_tocken(cancellation_token.clone())
             .max_connection_count(2)
             .buffer_size(10)
-            .single_digits(1)
-            .tens(2)
+            .single_digits(2)
+            .tens(12)
             .hundreds(1)
             .db_config(db_config.clone())
             .queries(queries.clone())
@@ -181,12 +189,12 @@ mod tests {
             .connection_creation_threshold(15.0)
             .print_connection_configuration();
 
-        let upsert_processor = builder.build_update();
+        let upsert_processor = builder.clone().build_update();
         
         assert_eq!(upsert_processor.max_con_count, 2);
         assert_eq!(upsert_processor.buffer_size, 10);
-        assert_eq!(upsert_processor.single_digits, 1);
-        assert_eq!(upsert_processor.tens, 2);
+        assert_eq!(upsert_processor.single_digits, 2);
+        assert_eq!(upsert_processor.tens, 12);
         assert_eq!(upsert_processor.hundreds, 1);
         // Compare the string representation of db_config as Config doesn't implement PartialEq
         assert_eq!(format!("{:?}", upsert_processor.db_config), format!("{:?}", db_config));
@@ -201,6 +209,8 @@ mod tests {
 
         cancellation_token.cancel();
         assert_eq!(upsert_processor.cancellation_token.is_cancelled(), cancellation_token.is_cancelled());
+
+        builder
     }
 
     #[test]
