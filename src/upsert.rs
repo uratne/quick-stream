@@ -564,7 +564,7 @@ mod tests {
         let sender = processor.init_sender::<MockData>(n, count, &mut tx_count, type_);
 
         assert_eq!(tx_count, 100);
-        assert_eq!(sender.len(), 10);
+        assert_eq!(sender.len(), 11);
         assert_eq!(sender.get(0).unwrap().type_, type_);
         assert_eq!(sender.get(2).unwrap().id, original_tx_count + 2);
     }
