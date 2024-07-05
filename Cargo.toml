@@ -11,7 +11,7 @@ authors = ["Uditha Gunaratne <gunaratne1996@gmail.com>"]
 keywords = ["data-ingestion", "postgre", "async"]
 categories = ["database"]
 exclude = [
-    ".git/*",
+    ".github/*",
     "ROADMAP.md",
 ]
 
