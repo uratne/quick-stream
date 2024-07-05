@@ -2,6 +2,15 @@
 name = "quick_stream"
 version = "0.1.0"
 edition = "2021"
+license-file = "LICENSE"
+description = "Quick Stream is a Rust-based solution designed to efficiently handle data upsert operations with a focus on performance and scalability. Utilizing asynchronous programming and a dynamic sender-receiver model, Quick Stream aims to streamline the process of synchronizing large datasets with minimal overhead."
+homepage = "https://github.com/uratne/quick-stream"
+repository = "https://github.com/uratne/quick-stream"
+readme = "README.md"
+authors = ["Uditha Gunaratne <gunaratne1996@gmail.com>"]
+keywords = ["data-ingestion", "postgre", "async"]
+categories = ["database"]
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,3 +25,6 @@ futures = { version = "0.3.30"}
 chrono = {version = "0.4.26", features = ["serde"]}
 log = { version = "0.4.21" }
 random_word = { version = "0.4.3", features = ["en"] }
+
+[lints.rust]
+unsafe_code = "forbid"
