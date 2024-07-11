@@ -6,6 +6,6 @@
 4. documenting ✓
 5. impliment using cancellation token for **graceful shutdown**.( v.0.1.1) ✓
 6. push to crates.io ✓
-7. impliment **DeletQuickStream** (v.0.1.2)
+7. impliment **DeletQuickStream** (v.0.1.2) ✓
 8. impliment **rocks db persistance** (v.0.1.3)
 9. remove cancellation token system and implement gracefull shutdown.

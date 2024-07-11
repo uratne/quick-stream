@@ -6,7 +6,7 @@ use random_word::Lang;
 use support::QueryHolder;
 use tokio_util::sync::CancellationToken;
 
-use crate::upsert::UpsertQuickStream;
+use crate::{delete::DeleteQuickStream, upsert::UpsertQuickStream};
 
 pub mod support;
 
@@ -18,9 +18,11 @@ pub struct QuickStreamBuilder {
     single_digits: Option<usize>,
     tens: Option<usize>,
     hundreds: Option<usize>,
+    init_delete_con_count: Option<usize>,
     db_config: Option<tokio_postgres::Config>,
     tls: Option<Certificate>,
     queries: Option<QueryHolder>,
+    delete_query: Option<String>,
     max_records_per_cycle_batch: Option<usize>, //a batch = introduced_lag_cycles
     introduced_lag_cycles: Option<usize>,
     introduced_lag_in_millies: Option<u64>,
@@ -46,7 +48,9 @@ impl Default for QuickStreamBuilder {
             introduced_lag_in_millies: None,
             connection_creation_threshold: None,
             name: Some(format!("{}_{}", random_word::gen(Lang::En), random_word::gen(Lang::En))),
-            print_connection_configuration: false
+            print_connection_configuration: false,
+            init_delete_con_count: None,
+            delete_query: None,
         }
     }
 }
@@ -88,6 +92,11 @@ impl QuickStreamBuilder {
         self
     }
 
+    pub fn init_delete_con_count(&mut self, init_delete_con_count: usize) -> &mut Self {
+        self.init_delete_con_count = Some(init_delete_con_count);
+        self
+    }
+
     pub fn db_config(&mut self, db_config: tokio_postgres::Config) -> &mut Self {
         self.db_config = Some(db_config);
         self
@@ -100,6 +109,11 @@ impl QuickStreamBuilder {
 
     pub fn queries(&mut self, queries: QueryHolder) -> &mut Self {
         self.queries = Some(queries);
+        self
+    }
+
+    pub fn delete_query(&mut self, delete_query: String) -> &mut Self {
+        self.delete_query = Some(delete_query);
         self
     }
 
@@ -137,23 +151,42 @@ impl QuickStreamBuilder {
         self
     }
 
-    pub fn build_update(self) -> UpsertQuickStream {
+    pub fn build_update(&self) -> UpsertQuickStream {
         trace!("building UpsertQuickStream from builder");
         UpsertQuickStream {
-            cancellation_token: self.cancellation_token.expect("cancellation_token is None"),
+            cancellation_token: self.clone().cancellation_token.expect("cancellation_token is None"),
             max_con_count: self.max_con_count.expect("max_con_count is None"),
             buffer_size: self.buffer_size.expect("buffer_size is None"),
             single_digits: self.single_digits.expect("single_digits is None"),
             tens: self.tens.expect("tens is None"),
             hundreds: self.hundreds.expect("hundreds is None"),
-            db_config: self.db_config.expect("db_config is None"),
-            tls: self.tls,
-            queries: self.queries.expect("queries is None"),
+            db_config: self.clone().db_config.expect("db_config is None"),
+            tls: self.clone().tls,
+            queries: self.clone().queries.expect("queries is None"),
             max_records_per_cycle_batch: self.max_records_per_cycle_batch.expect("max_records_per_cycle_batch is None"),
             introduced_lag_cycles: self.introduced_lag_cycles.expect("introduced_lag_cycles is None"),
             introduced_lag_in_millies: self.introduced_lag_in_millies.expect("introduced_lag_in_millies is None"),
             connection_creation_threshold: self.connection_creation_threshold.expect("connection_creation_threshold is None"),
-            name: self.name.expect("not a possible scenario"),
+            name: self.clone().name.expect("not a possible scenario"),
+            print_con_config: self.print_connection_configuration
+        }
+    }
+
+    pub fn build_delete(&self) -> DeleteQuickStream {
+        trace!("building DeleteQuickStream from builder");
+        DeleteQuickStream {
+            cancellation_token: self.clone().cancellation_token.expect("cancellation_token is None"),
+            max_con_count: self.max_con_count.expect("max_con_count is None"),
+            buffer_size: self.buffer_size.expect("buffer_size is None"),
+            init_con_count: self.init_delete_con_count.expect("init_delete_con_count is None"),
+            db_config: self.clone().db_config.expect("db_config is None"),
+            tls: self.clone().tls,
+            query: self.clone().delete_query.expect("delete_query is None"),
+            max_records_per_cycle_batch: self.max_records_per_cycle_batch.expect("max_records_per_cycle_batch is None"),
+            introduced_lag_cycles: self.introduced_lag_cycles.expect("introduced_lag_cycles is None"),
+            introduced_lag_in_millies: self.introduced_lag_in_millies.expect("introduced_lag_in_millies is None"),
+            connection_creation_threshold: self.connection_creation_threshold.expect("connection_creation_threshold is None"),
+            name: self.clone().name.expect("not a possible scenario"),
             print_con_config: self.print_connection_configuration
         }
     }

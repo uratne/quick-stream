@@ -1,12 +1,20 @@
 use std::{collections::HashSet, time::Duration};
 
+use delete::Delete;
 use log::debug;
 use upsert::Upsert;
 
 pub mod builder;
 pub mod upsert;
+pub mod delete;
 
-fn remove_duplicates<T>(data: &mut Vec<T>) where T: Upsert<T> + Clone + Send + 'static {
+fn remove_upsert_duplicates<T>(data: &mut Vec<T>) where T: Upsert<T> + Clone + Send + 'static {
+    let mut hash_set = HashSet::new();
+    data.sort_by(|x, y| y.modified_date().cmp(&x.modified_date()));
+    data.retain(|data| hash_set.insert(data.pkey().clone()))
+}
+
+fn remove_delete_duplicates<T>(data: &mut Vec<T>) where T: Delete<T> + Clone + Send + 'static {
     let mut hash_set = HashSet::new();
     data.sort_by(|x, y| y.modified_date().cmp(&x.modified_date()));
     data.retain(|data| hash_set.insert(data.pkey().clone()))

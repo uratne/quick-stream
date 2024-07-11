@@ -10,7 +10,7 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls, Statement};
 use tokio_util::sync::CancellationToken;
 
-use crate::{builder::support::QueryHolder, introduce_lag, remove_duplicates, split_vec};
+use crate::{builder::support::QueryHolder, introduce_lag, remove_upsert_duplicates, split_vec};
 
 #[async_trait]
 pub trait Upsert<T>: Send + Sync
@@ -50,7 +50,6 @@ impl<T> UpsertData<T> where T: Upsert<T> + Clone + Send {
 
 
 #[derive(Default, Clone)]
-#[allow(dead_code)] //for cancellation token, TODO remove when used
 pub struct UpsertQuickStream {
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) max_con_count: usize,
@@ -69,7 +68,7 @@ pub struct UpsertQuickStream {
     pub(crate) print_con_config: bool
 }
 
-#[allow(dead_code)]
+
 impl UpsertQuickStream {
     pub async fn run<T>(&self, mut rx: Receiver<Vec<T>>) where T: Upsert<T> + Clone + Send + 'static {
 
@@ -116,7 +115,7 @@ impl UpsertQuickStream {
             trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
 
             trace!("{}: removing duplicates", self.name);
-            remove_duplicates(&mut data);
+            remove_upsert_duplicates(&mut data);
             trace!("{}: removing duplicates complete", self.name);
 
             trace!("{}: splitting vectors for batch ingestion", self.name);
@@ -139,8 +138,9 @@ impl UpsertQuickStream {
                         trace!("{}: append success", self.name);
 
                         trace!("{}: removing duplicates", self.name);
-                        remove_duplicates(&mut data);
+                        remove_upsert_duplicates(&mut data);
                         trace!("{}: removing duplicates success", self.name);
+
                         if data.len() >= self.max_records_per_cycle_batch {
                             trace!("{}: data count: {} exceeds max records per cycle batch: {}. breaking the lag cycle and proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
                             break 'inner;
@@ -151,8 +151,8 @@ impl UpsertQuickStream {
                         introduced_lag_cycles += 1;
 
                         trace!("{}: lag cycles: {}", self.name, introduced_lag_cycles);
-                        // greater than or equal is used allowing 0 lag cycles
-                        if introduced_lag_cycles >= self.introduced_lag_cycles {
+                        // greater than is used allowing 0 lag cycles
+                        if introduced_lag_cycles > self.introduced_lag_cycles {
                             trace!("{}: lag cycles: {} exceeds or reached max introduced lag cycles. data count : {}. proceeding for ingestion.", self.name, self.introduced_lag_cycles, data.len());
                             break 'inner;
                         } else {
@@ -254,7 +254,8 @@ impl UpsertQuickStream {
             tokio::select! {
                 Some(data) = rx.recv() => {
                     trace!("{}:{}:{}: data received pushing for ingestion. pkeys: {:?}", self.name, n, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
-                    T::upsert(&client, data, &statement, thread_id).await?;
+                    let count = T::upsert(&client, data, &statement, thread_id).await?;
+                    trace!("{}:{}:{}: data ingestion successfull. count: {}", self.name, n, thread_id, count);
                 }
                 _ = self.cancellation_token.cancelled() => {
                     info!("{}:{}:{}: cancellation token received. shutting down data ingestor", self.name, n, thread_id);
@@ -387,9 +388,9 @@ impl UpsertQuickStream {
                         senders.push(tx_struct);
 
                         if *tx_count == self.max_con_count as i64 {
-                            eprintln!("warn max connection count reached")
+                            warn!("{}: max connection count reached", self.name)
                         } else {
-                            println!("connection created, current total connections : {}", tx_count)
+                            info!("{}: connection created, current total connections : {}", self.name, tx_count)
                         }
                     },
                     Err(error) => {
@@ -525,7 +526,7 @@ mod tests {
     use futures::future::BoxFuture;
     use tokio_postgres::{Client, Error, Statement};
 
-    use crate::{builder, introduce_lag, remove_duplicates, split_vec, split_vec_by_given};
+    use crate::{builder, introduce_lag, remove_upsert_duplicates, split_vec, split_vec_by_given};
 
     use super::Upsert;
 
@@ -564,7 +565,7 @@ mod tests {
             MockData { id: 2, modified_date: DateTime::from_timestamp(1627847282, 0).unwrap().naive_utc() },
         ];
 
-        remove_duplicates(&mut data);
+        remove_upsert_duplicates(&mut data);
         assert_eq!(data.len(), 2);
         assert_eq!(data[0].id, 2);
         assert_eq!(data[1].id, 1);
