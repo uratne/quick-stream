@@ -85,9 +85,30 @@ impl UpsertQuickStream {
         trace!("{}: inititating senders complete", self.name);
         
         info!("{}: main channel receiver starting", self.name);
-        while let Some(data) = rx.recv().await {
-            self.process_received(data, &mut senders, &mut tx_count, &mut rx).await;
+        'outer: loop {
+            tokio::select! {
+                Some(data) = rx.recv() => {
+                    self.process_received(data, &mut senders, &mut tx_count, &mut rx).await;
+                }
+                _ = self.cancellation_token.cancelled() => {
+                    info!("{}: cancellation token received. shutting down upsert quick stream", self.name);
+                    break 'outer;
+                }
+            }
         }
+
+        for (type_, sender) in senders {
+            info!("{}: shutting down senders of type {}", self.name, type_);
+            for upsert_data in sender {
+                match upsert_data.join_handler.await {
+                    Ok(_) => trace!("{}: sender {}:{} shutdown", self.name, type_, upsert_data.id),
+                    Err(error) => error!("{}: sender {}:{} shutdown failed with error: {}", self.name, type_, upsert_data.id, error),
+                };
+            }
+            info!("{}: senders of type {} shutdown complete", self.name, type_);
+        }
+
+        info!("{}: upsert quick stream shutdown complete", self.name);
     }
 
     async fn process_received<T>(&self, mut data: Vec<T>,mut senders: &mut HashMap<usize, Vec<UpsertData<T>>>, mut tx_count: &mut i64, rx: &mut Receiver<Vec<T>>) where T: Upsert<T> + Clone + Send + 'static {
