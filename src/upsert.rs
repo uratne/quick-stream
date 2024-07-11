@@ -250,10 +250,22 @@ impl UpsertQuickStream {
         info!("{}:{}:{}: query prepared and created statement successfully", self.name, n, thread_id);
 
         info!("{}:{}:{}: data ingestor channel receiver starting", self.name, n, thread_id);
-        while let Some(data) = rx.recv().await {
-            trace!("{}:{}:{}: data received pushing for ingestion. pkeys: {:?}", self.name, n, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
-            T::upsert(&client, data, &statement, thread_id).await?;
+        'inner: loop {
+            tokio::select! {
+                Some(data) = rx.recv() => {
+                    trace!("{}:{}:{}: data received pushing for ingestion. pkeys: {:?}", self.name, n, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
+                    T::upsert(&client, data, &statement, thread_id).await?;
+                }
+                _ = self.cancellation_token.cancelled() => {
+                    info!("{}:{}:{}: cancellation token received. shutting down data ingestor", self.name, n, thread_id);
+                    break 'inner
+                }
+            }
         }
+
+        info!("{}:{}:{}: closing the channel", self.name, n, thread_id);
+        drop(rx);
+        
 
         info!("{}:{}:{} shutting down data ingestor", self.name, n, thread_id);
         Ok(())
