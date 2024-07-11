@@ -1,7 +1,7 @@
 ***INCOMPLETE***
 
 # Quick Stream
-[![Quick Stream](https://github.com/uratne/quick-stream/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/uratne/quick-stream/actions/workflows/rust.yml) ![Rust Badge](https://img.shields.io/badge/Rust-1.79.0-000?logo=rust&logoColor=fff&style=flat)
+[![Build](https://github.com/uratne/quick-stream/actions/workflows/build.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/build.yml) [![UnitTests](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml) ![Rust Badge](https://img.shields.io/badge/Rust-1.79.0-000?logo=rust&logoColor=fff&style=flat)
 
 * Quick Stream is a Rust-based solution designed to efficiently handle data upsert operations with a focus on performance and scalability. Utilizing asynchronous programming and a dynamic sender-receiver model, Quick Stream aims to streamline the process of synchronizing large datasets with minimal overhead.
 
