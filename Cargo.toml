@@ -1,6 +1,6 @@
 [package]
 name = "quick_stream"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Quick Stream is a Rust-based solution designed to efficiently handle data upsert operations with a focus on performance and scalability. Utilizing asynchronous programming and a dynamic sender-receiver model, Quick Stream aims to streamline the process of synchronizing large datasets with minimal overhead."
