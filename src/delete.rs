@@ -230,10 +230,19 @@ impl DeleteQuickStream {
         info!("{}:{}: query prepared and created statement successfully", self.name, thread_id);
 
         info!("{}:{}: data soft deleter channel receiver starting", self.name, thread_id);
-        while let Some(data) = rx.recv().await {
-            trace!("{}:{}: data received pushing for soft deletion. pkeys: {:?}", self.name, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
-            let count = T::delete(&client, data, &statement, thread_id).await?;
-            trace!("{}:{}: data soft deletion successfull. count: {}", self.name, thread_id, count);
+
+        'inner: loop {
+            tokio::select! {
+                Some(data) = rx.recv() => {
+                    trace!("{}:{}: data received pushing for soft deletion. pkeys: {:?}", self.name, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
+                    let count = T::delete(&client, data, &statement, thread_id).await?;
+                    trace!("{}:{}: data soft deletion successfull. count: {}", self.name, thread_id, count);
+                }
+                _ = self.cancellation_token.cancelled() => {
+                    info!("{}:{}: cancellation token received. shutting down data soft deleter", self.name, thread_id);
+                    break 'inner;
+                }
+            }
         }
 
         info!("{}:{}: closing the channel", self.name, thread_id);
