@@ -7,6 +7,7 @@ use upsert::Upsert;
 pub mod builder;
 pub mod upsert;
 pub mod delete;
+pub mod shutdown_service;
 
 fn remove_upsert_duplicates<T>(data: &mut Vec<T>) where T: Upsert<T> + Clone + Send + 'static {
     let mut hash_set = HashSet::new();

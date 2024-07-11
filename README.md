@@ -30,3 +30,5 @@ cargo test --lib
 
 ## Roadmap
 See the [ROADMAP](ROADMAP.md)
+
+### same Cancellation Token Should be used to all of the processors of type QuickStream

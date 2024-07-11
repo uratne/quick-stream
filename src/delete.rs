@@ -8,6 +8,9 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls, Statement};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(all(unix, feature = "unix-signals"))]
+use crate::shutdown_service;
+
 use crate::{introduce_lag, remove_delete_duplicates};
 
 #[async_trait]
@@ -75,6 +78,26 @@ impl DeleteQuickStream {
         let mut senders = self.init_senders::<T>(&mut tx_count);
         trace!("{}: inititating senders complete", self.name);
 
+        #[cfg(all(unix, feature = "unix-signals"))]
+        let cancellation_token = self.cancellation_token.clone();
+
+        #[cfg(all(unix, feature = "unix-signals"))]
+        let unix_shutdown_service = tokio::spawn(async move {
+            shutdown_service::shutdown_unix(cancellation_token).await;
+            3u8
+        });
+
+        #[cfg(all(windows, feature = "windows-signals"))]
+        let cancellation_token = self.cancellation_token.clone();
+
+        #[cfg(all(windows, feature = "windows-signals"))]
+        match ctrlc::try_set_handler(move || {
+            cancellation_token.cancel();
+        }) {
+            Ok(_) => trace!("{}: ctrlc handler set", self.name),
+            Err(_) => error!("{}: ctrlc handler failed to set", self.name)
+        };
+
         'outer: loop {
             tokio::select! {
                 Some(data) = rx.recv() => {
@@ -92,6 +115,12 @@ impl DeleteQuickStream {
                 Ok(_) => trace!("{}: sender {} shutdown", self.name, delet_data.id),
                 Err(error) => error!("{}: sender {} shutdown failed with error: {}", self.name, delet_data.id, error),
             }
+        }
+
+        #[cfg(all(unix, feature = "unix-signals"))]
+        match unix_shutdown_service.await {
+            Ok(_) => info!("{}: upsert quick stream shutdown service complete", self.name),
+            Err(error) => error!("{}: upsert quick stream shutdown service failed with error: {}", self.name, error)
         }
 
         info!("{}: delete quick stream shutdown complete", self.name);
