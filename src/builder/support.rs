@@ -1,3 +1,49 @@
+use std::collections::HashMap;
+
+use tokio_postgres::{Client, Statement};
+
+#[derive(Debug, Clone, Default)]
+pub struct MultiTableQueryHolder {
+    query_map: HashMap<String, QueryHolder>
+}
+
+impl MultiTableQueryHolder {
+    pub fn new(query_map: HashMap<String, QueryHolder>) -> MultiTableQueryHolder {
+        MultiTableQueryHolder { query_map }
+    }
+
+    pub fn get(&self, n: &usize) -> MultiTableSingleQueryHolder {
+        let mut query_map = HashMap::new();
+        for (key, value) in self.query_map.iter() {
+            query_map.insert(key.clone(), value.get(n));
+        }
+        MultiTableSingleQueryHolder { query_map }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MultiTableSingleQueryHolder {
+    query_map: HashMap<String, String>
+}
+
+impl MultiTableSingleQueryHolder {
+    pub fn get(&self, table_name: fn() -> String) -> String {
+        match self.query_map.get(&table_name()) {
+            Some(query) => query.clone(),
+            None => panic!("Query Not Found For Table: {}", table_name()),
+        }
+    }
+
+    pub async fn prepare(&self, client: &Client) -> HashMap<String, Statement> {
+        let mut statement_map = HashMap::new();
+        for (key, value) in self.query_map.iter() {
+            let statement = client.prepare(value).await.unwrap();
+            statement_map.insert(key.clone(), statement);
+        }
+        statement_map
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct QueryHolder {
     one: String,
@@ -162,3 +208,5 @@ impl QueryHolderBuilder {
         }
     }
 }
+
+
