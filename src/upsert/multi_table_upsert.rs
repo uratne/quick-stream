@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(all(unix, feature = "unix-signals"))]
 use crate::shutdown_service;
 
-use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, remove_upsert_duplicates, split_vec, split_vec_by_given};
+use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, remove_upsert_duplicates, split_vec};
 
 use super::Upsert;
 

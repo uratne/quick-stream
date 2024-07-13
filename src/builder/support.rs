@@ -27,10 +27,10 @@ pub struct MultiTableSingleQueryHolder {
 }
 
 impl MultiTableSingleQueryHolder {
-    pub fn get(&self, table_name: fn() -> String) -> String {
-        match self.query_map.get(&table_name()) {
+    pub fn get(&self, table_name: String) -> String {
+        match self.query_map.get(&table_name) {
             Some(query) => query.clone(),
-            None => panic!("Query Not Found For Table: {}", table_name()),
+            None => panic!("Query Not Found For Table: {}", table_name),
         }
     }
 
