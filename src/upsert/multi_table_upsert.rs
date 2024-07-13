@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use log::{error, info, trace, warn};
 use native_tls::{Certificate, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
+use support::DataHolder;
 use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls};
 use tokio_util::sync::CancellationToken;
@@ -11,7 +12,9 @@ use tokio_util::sync::CancellationToken;
 #[cfg(all(unix, feature = "unix-signals"))]
 use crate::shutdown_service;
 
-use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, remove_upsert_duplicates, split_vec};
+use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, split_vec};
+
+pub mod support;
 
 use super::Upsert;
 
@@ -21,6 +24,7 @@ where
     T: Clone + Send + Sync,
 {
     fn table(&self) -> String;
+    fn tables() -> Vec<String>;
 }
 
 #[derive(Debug)]
@@ -131,50 +135,45 @@ impl MultiTableUpsertQuickStream {
         info!("{}: upsert quick stream shutdown complete", self.name);
     }
 
-    async fn process_received<T>(&self, mut data: Vec<T>,mut senders: &mut HashMap<usize, Vec<UpsertData<T>>>, mut tx_count: &mut i64, rx: &mut Receiver<Vec<T>>) where T: MultiTableUpsert<T> + Clone + Send + 'static {
-        if data.len() >= self.max_records_per_cycle_batch {
-            trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
-
-            trace!("{}: removing duplicates", self.name);
-            remove_upsert_duplicates(&mut data);
-            trace!("{}: removing duplicates complete", self.name);
-
-            trace!("{}: splitting vectors for batch ingestion", self.name);
-            let vec_data = split_vec(data);
-            trace!("{}: splitting vectors complete. batch count: {}", self.name, vec_data.len());
-
-            trace!("{}: data ingestion starting for batches", self.name);
-            self.push_to_handle(senders, vec_data.to_owned(), tx_count).await;
-            trace!("{}: data pushed for ingestion", self.name);
-        } else {
-            trace!(target: format!("").as_str() ,"{}: data count: {} does not exceeds max records per cycle batch: {}", self.name, data.len(), self.max_records_per_cycle_batch);
+    async fn process_received<T>(&self, data: Vec<T>,mut senders: &mut HashMap<usize, Vec<UpsertData<T>>>, mut tx_count: &mut i64, rx: &mut Receiver<Vec<T>>) where T: MultiTableUpsert<T> + Clone + Send + 'static {
+        let mut data_holder = DataHolder::<T>::default();
+        trace!("{}: data received. Adding data to a data holder", self.name);
+        let data_ready_to_process = data_holder.add_all(data, self.max_records_per_cycle_batch);
+        if data_ready_to_process.len() > 0 {
+            trace!("{}: ready to process data available. proceding for ingestion one table at a time", self.name);
+            for (table, data) in data_ready_to_process {
+                trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+                self.send_processed(data, table, &mut senders, &mut tx_count).await;
+            }
+        } else if data_holder.len() > 0 {
 
             trace!("{}: starting lag cycles", self.name);
             let mut introduced_lag_cycles = 0;
             'inner: loop {
                 match rx.try_recv() {
-                    Ok(mut more_data) => {
-                        trace!("{}: more data received. amount : {}. appending to data", self.name, more_data.len());
-                        data.append(&mut more_data);
-                        trace!("{}: append success", self.name);
+                    Ok(more_data) => {
+                        trace!("{}: more data received. Adding data to a data holder", self.name);
+                        let data_ready_to_process = data_holder.add_all(more_data, self.max_records_per_cycle_batch);
 
-                        trace!("{}: removing duplicates", self.name);
-                        remove_upsert_duplicates(&mut data);
-                        trace!("{}: removing duplicates success", self.name);
-
-                        if data.len() >= self.max_records_per_cycle_batch {
+                        trace!("{}: ready to process data available. proceding for ingestion one table at a time", self.name);
+                        for (table, data) in data_ready_to_process {
                             trace!("{}: data count: {} exceeds max records per cycle batch: {}. breaking the lag cycle and proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
+                            self.send_processed(data, table, &mut senders, &mut tx_count).await;
+                        }
+
+                        if data_holder.len() == 0 {
+                            trace!("{}: no more data to process. breaking the lag cycle", self.name);
                             break 'inner;
                         }
                     },
                     Err(_) => {
-                        trace!("{}: no data received. data count: {}", self.name, data.len());
+                        trace!("{}: no data received. data count: {}", self.name, data_holder.len());
                         introduced_lag_cycles += 1;
 
                         trace!("{}: lag cycles: {}", self.name, introduced_lag_cycles);
                         // greater than is used allowing 0 lag cycles
                         if introduced_lag_cycles > self.introduced_lag_cycles {
-                            trace!("{}: lag cycles: {} exceeds or reached max introduced lag cycles. data count : {}. proceeding for ingestion.", self.name, self.introduced_lag_cycles, data.len());
+                            trace!("{}: lag cycles: {} exceeds or reached max introduced lag cycles. data count : {}. proceeding for ingestion.", self.name, self.introduced_lag_cycles, data_holder.len());
                             break 'inner;
                         } else {
                             trace!("{}: introducing lag", self.name);
@@ -185,16 +184,29 @@ impl MultiTableUpsertQuickStream {
                 }
             };
 
-            trace!("{}: splitting vectors for batch ingestion", self.name);
-            let vec_data = split_vec(data);
-            trace!("{}: splitting vectors complete. batch count: {}", self.name, vec_data.len());
-
-            trace!("{}: data ingestion starting for batches", self.name);
-            self.push_to_handle(&mut senders, vec_data, &mut tx_count).await;
-            trace!("{}: data pushed for ingestion", self.name);
+            trace!("{}: lag cycles complete. Getting all data from data holder to process", self.name);
+            let all_data = data_holder.get_all();
+        
+            for (table, data) in all_data {
+                trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+                self.send_processed(data, table, &mut senders, &mut tx_count).await;
+            }
+            
         }
 
         self.rebalance_senders(&mut senders, &mut tx_count);
+    }
+
+    async fn send_processed<T>(&self, data: Vec<T>, table: String, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, tx_count: &mut i64 ) where T: MultiTableUpsert<T> + Clone + Send + 'static {
+        trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+
+        trace!("{}: splitting vectors for batch ingestion for table: {}", self.name, table);
+        let vec_data = split_vec(data);
+        trace!("{}: splitting vectors complete. batch count: {} for table: {}", self.name, vec_data.len(), table);
+
+        trace!("{}: data ingestion starting for batches of table: {}", self.name, table);
+        self.push_to_handle(senders, vec_data.to_owned(), tx_count).await;
+        trace!("{}: data pushed for ingestion for table: {}", self.name, table);
     }
 
     async fn get_db_client(&self) -> Client {
@@ -266,9 +278,9 @@ impl MultiTableUpsertQuickStream {
         let client = self.get_db_client().await;
         info!("{}:{}:{}: creating database client success", self.name, n, thread_id);
 
-        info!("{}:{}:{}: preparing query and creating statement map", self.name, n, thread_id);
+        info!("{}:{}:{}: preparing queries and creating statement map", self.name, n, thread_id);
         let statement_map = multi_table_single_queries.prepare(&client).await;
-        info!("{}:{}:{}: query prepared and created statement map successfully", self.name, n, thread_id);
+        info!("{}:{}:{}: queries prepared and created statement map successfully", self.name, n, thread_id);
 
         info!("{}:{}:{}: data ingestor channel receiver starting", self.name, n, thread_id);
         'inner: loop {
