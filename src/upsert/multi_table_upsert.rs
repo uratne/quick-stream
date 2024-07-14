@@ -1,46 +1,41 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use chrono::NaiveDateTime;
 use log::{error, info, trace, warn};
 use native_tls::{Certificate, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
+use support::DataHolder;
 use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
-use tokio_postgres::{Client, Error, NoTls, Statement};
+use tokio_postgres::{Client, Error, NoTls};
 use tokio_util::sync::CancellationToken;
-
-pub mod multi_table_upsert;
 
 #[cfg(all(unix, feature = "unix-signals"))]
 use crate::shutdown_service;
 
-use crate::{builder::support::QueryHolder, introduce_lag, remove_upsert_duplicates, split_vec};
+use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, split_vec};
+
+pub mod support;
+
+use super::Upsert;
 
 #[async_trait]
-pub trait Upsert<T>: Send + Sync
+pub trait MultiTableUpsert<T>: Send + Sync + Upsert<T>
 where
     T: Clone + Send + Sync,
 {
-    async fn upsert(
-        client: &Client,
-        data: Vec<T>,
-        statement: &Statement,
-        thread_id: i64,
-    ) -> Result<u64, Error>;
-
-    fn modified_date(&self) -> NaiveDateTime;
-    fn pkey(&self) -> i64;
+    fn table(&self) -> String;
+    fn tables() -> Vec<String>;
 }
 
 #[derive(Debug)]
-struct UpsertData<T> where T: Upsert<T> + Clone + Send {
+struct UpsertData<T> where T: MultiTableUpsert<T> + Clone + Send {
     pub tx: Sender<Vec<T>>,
     pub join_handler: JoinHandle<u8>,
     pub id: i64,
     pub type_: usize
 }
 
-impl<T> UpsertData<T> where T: Upsert<T> + Clone + Send {
+impl<T> UpsertData<T> where T: MultiTableUpsert<T> + Clone + Send {
     pub fn new(tx: Sender<Vec<T>>, join_handler: JoinHandle<u8>, id: i64, type_: usize) -> Self {
         Self {
             tx,
@@ -54,7 +49,7 @@ impl<T> UpsertData<T> where T: Upsert<T> + Clone + Send {
 
 
 #[derive(Default, Clone)]
-pub struct UpsertQuickStream {
+pub struct MultiTableUpsertQuickStream {
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) max_con_count: usize,
     pub(crate) buffer_size: usize,
@@ -63,7 +58,7 @@ pub struct UpsertQuickStream {
     pub(crate) hundreds: usize,
     pub(crate) db_config: tokio_postgres::Config,
     pub(crate) tls: Option<Certificate>,
-    pub(crate) queries: QueryHolder,
+    pub(crate) queries: MultiTableQueryHolder,
     pub(crate) max_records_per_cycle_batch: usize, //a batch = introduced_lag_cycles
     pub(crate) introduced_lag_cycles: usize,
     pub(crate) introduced_lag_in_millies: u64,
@@ -73,8 +68,8 @@ pub struct UpsertQuickStream {
 }
 
 
-impl UpsertQuickStream {
-    pub async fn run<T>(&self, mut rx: Receiver<Vec<T>>) where T: Upsert<T> + Clone + Send + 'static {
+impl MultiTableUpsertQuickStream {
+    pub async fn run<T>(&self, mut rx: Receiver<Vec<T>>) where T: MultiTableUpsert<T> + Clone + Send + 'static {
 
         info!("{}: upsert quick stream is starting", self.name);
         info!("{}: testing database connections", self.name);
@@ -140,50 +135,45 @@ impl UpsertQuickStream {
         info!("{}: upsert quick stream shutdown complete", self.name);
     }
 
-    async fn process_received<T>(&self, mut data: Vec<T>,mut senders: &mut HashMap<usize, Vec<UpsertData<T>>>, mut tx_count: &mut i64, rx: &mut Receiver<Vec<T>>) where T: Upsert<T> + Clone + Send + 'static {
-        if data.len() >= self.max_records_per_cycle_batch {
-            trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
-
-            trace!("{}: removing duplicates", self.name);
-            remove_upsert_duplicates(&mut data);
-            trace!("{}: removing duplicates complete", self.name);
-
-            trace!("{}: splitting vectors for batch ingestion", self.name);
-            let vec_data = split_vec(data);
-            trace!("{}: splitting vectors complete. batch count: {}", self.name, vec_data.len());
-
-            trace!("{}: data ingestion starting for batches", self.name);
-            self.push_to_handle(senders, vec_data.to_owned(), tx_count).await;
-            trace!("{}: data pushed for ingestion", self.name);
-        } else {
-            trace!(target: format!("").as_str() ,"{}: data count: {} does not exceeds max records per cycle batch: {}", self.name, data.len(), self.max_records_per_cycle_batch);
+    async fn process_received<T>(&self, data: Vec<T>,mut senders: &mut HashMap<usize, Vec<UpsertData<T>>>, mut tx_count: &mut i64, rx: &mut Receiver<Vec<T>>) where T: MultiTableUpsert<T> + Clone + Send + 'static {
+        let mut data_holder = DataHolder::<T>::default();
+        trace!("{}: data received. Adding data to a data holder", self.name);
+        let data_ready_to_process = data_holder.add_all(data, self.max_records_per_cycle_batch);
+        if data_ready_to_process.len() > 0 {
+            trace!("{}: ready to process data available. proceding for ingestion one table at a time", self.name);
+            for (table, data) in data_ready_to_process {
+                trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+                self.send_processed(data, table, &mut senders, &mut tx_count).await;
+            }
+        } else if data_holder.len() > 0 {
 
             trace!("{}: starting lag cycles", self.name);
             let mut introduced_lag_cycles = 0;
             'inner: loop {
                 match rx.try_recv() {
-                    Ok(mut more_data) => {
-                        trace!("{}: more data received. amount : {}. appending to data", self.name, more_data.len());
-                        data.append(&mut more_data);
-                        trace!("{}: append success", self.name);
+                    Ok(more_data) => {
+                        trace!("{}: more data received. Adding data to a data holder", self.name);
+                        let data_ready_to_process = data_holder.add_all(more_data, self.max_records_per_cycle_batch);
 
-                        trace!("{}: removing duplicates", self.name);
-                        remove_upsert_duplicates(&mut data);
-                        trace!("{}: removing duplicates success", self.name);
-
-                        if data.len() >= self.max_records_per_cycle_batch {
+                        trace!("{}: ready to process data available. proceding for ingestion one table at a time", self.name);
+                        for (table, data) in data_ready_to_process {
                             trace!("{}: data count: {} exceeds max records per cycle batch: {}. breaking the lag cycle and proceesing for ingestion", self.name, data.len(), self.max_records_per_cycle_batch);
+                            self.send_processed(data, table, &mut senders, &mut tx_count).await;
+                        }
+
+                        if data_holder.len() == 0 {
+                            trace!("{}: no more data to process. breaking the lag cycle", self.name);
                             break 'inner;
                         }
                     },
                     Err(_) => {
-                        trace!("{}: no data received. data count: {}", self.name, data.len());
+                        trace!("{}: no data received. data count: {}", self.name, data_holder.len());
                         introduced_lag_cycles += 1;
 
                         trace!("{}: lag cycles: {}", self.name, introduced_lag_cycles);
                         // greater than is used allowing 0 lag cycles
                         if introduced_lag_cycles > self.introduced_lag_cycles {
-                            trace!("{}: lag cycles: {} exceeds or reached max introduced lag cycles. data count : {}. proceeding for ingestion.", self.name, self.introduced_lag_cycles, data.len());
+                            trace!("{}: lag cycles: {} exceeds or reached max introduced lag cycles. data count : {}. proceeding for ingestion.", self.name, self.introduced_lag_cycles, data_holder.len());
                             break 'inner;
                         } else {
                             trace!("{}: introducing lag", self.name);
@@ -194,16 +184,29 @@ impl UpsertQuickStream {
                 }
             };
 
-            trace!("{}: splitting vectors for batch ingestion", self.name);
-            let vec_data = split_vec(data);
-            trace!("{}: splitting vectors complete. batch count: {}", self.name, vec_data.len());
-
-            trace!("{}: data ingestion starting for batches", self.name);
-            self.push_to_handle(&mut senders, vec_data, &mut tx_count).await;
-            trace!("{}: data pushed for ingestion", self.name);
+            trace!("{}: lag cycles complete. Getting all data from data holder to process", self.name);
+            let all_data = data_holder.get_all();
+        
+            for (table, data) in all_data {
+                trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+                self.send_processed(data, table, &mut senders, &mut tx_count).await;
+            }
+            
         }
 
         self.rebalance_senders(&mut senders, &mut tx_count);
+    }
+
+    async fn send_processed<T>(&self, data: Vec<T>, table: String, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, tx_count: &mut i64 ) where T: MultiTableUpsert<T> + Clone + Send + 'static {
+        trace!("{}: data count: {} exceeds max records per cycle batch: {}. proceeding for ingestion to table: {}", self.name, data.len(), self.max_records_per_cycle_batch, table);
+
+        trace!("{}: splitting vectors for batch ingestion for table: {}", self.name, table);
+        let vec_data = split_vec(data);
+        trace!("{}: splitting vectors complete. batch count: {} for table: {}", self.name, vec_data.len(), table);
+
+        trace!("{}: data ingestion starting for batches of table: {}", self.name, table);
+        self.push_to_handle(senders, vec_data.to_owned(), tx_count).await;
+        trace!("{}: data pushed for ingestion for table: {}", self.name, table);
     }
 
     async fn get_db_client(&self) -> Client {
@@ -268,24 +271,26 @@ impl UpsertQuickStream {
         }
     }
 
-    async fn process_n<T>(&self, query: String, mut rx: Receiver<Vec<T>>, thread_id: i64, n: usize) -> Result<(), Error>  where T: Upsert<T> + Clone + Send + 'static {
+    async fn process_n<T>(&self, multi_table_single_queries: MultiTableSingleQueryHolder, mut rx: Receiver<Vec<T>>, thread_id: i64, n: usize) -> Result<(), Error>  where T: MultiTableUpsert<T> + Clone + Send + 'static {
         info!("{}:{}:{}: starting data ingestor", self.name, n, thread_id);
 
         info!("{}:{}:{}: creating database client", self.name, n, thread_id);
         let client = self.get_db_client().await;
         info!("{}:{}:{}: creating database client success", self.name, n, thread_id);
 
-        info!("{}:{}:{}: preparing query and creating statement", self.name, n, thread_id);
-        let statement = client.prepare(query.as_str()).await.unwrap();
-        info!("{}:{}:{}: query prepared and created statement successfully", self.name, n, thread_id);
+        info!("{}:{}:{}: preparing queries and creating statement map", self.name, n, thread_id);
+        let statement_map = multi_table_single_queries.prepare(&client).await;
+        info!("{}:{}:{}: queries prepared and created statement map successfully", self.name, n, thread_id);
 
         info!("{}:{}:{}: data ingestor channel receiver starting", self.name, n, thread_id);
         'inner: loop {
             tokio::select! {
                 Some(data) = rx.recv() => {
-                    trace!("{}:{}:{}: data received pushing for ingestion. pkeys: {:?}", self.name, n, thread_id, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
-                    let count = T::upsert(&client, data, &statement, thread_id).await?;
-                    trace!("{}:{}:{}: data ingestion successfull. count: {}", self.name, n, thread_id, count);
+                    //Make sure to send same type of data to a single sender so we can get the type
+                    let table = data.first().expect("Unreachable logic reached. Check quick_stream::upsert::process_n<T>(&self, multi_table_single_queries: MultiTableSingleQueryHolder, rx: Receiver<Vec<T>>, thread_id: i64, n: usize) function").table();
+                    trace!("{}:{}:{}: data received pushing for ingestion to table: {}. pkeys: {:?}", self.name, n, thread_id, table, data.iter().map(|f| f.pkey()).collect::<Vec<i64>>());
+                    let count = T::upsert(&client, data, &statement_map.get(&table).unwrap(), thread_id).await?;
+                    trace!("{}:{}:{}: data ingestion to table: {} successfull. count: {}", self.name, n, thread_id, table, count);
                 }
                 _ = self.cancellation_token.cancelled() => {
                     info!("{}:{}:{}: cancellation token received. shutting down data ingestor", self.name, n, thread_id);
@@ -305,7 +310,7 @@ impl UpsertQuickStream {
     /**
      * n is redunt here as n is the same as type_ ***need to remove n***
      */
-    fn init_sender<T>(&self, n: usize, count: usize, tx_count: &mut i64, type_: usize) -> Vec<UpsertData<T>> where T: Upsert<T> + Clone + Send + 'static {
+    fn init_sender<T>(&self, n: usize, count: usize, tx_count: &mut i64, type_: usize) -> Vec<UpsertData<T>> where T: MultiTableUpsert<T> + Clone + Send + 'static {
         trace!("{}: initiating sender, creating {} upsert senders", self.name, count);
         let mut senders = vec![];
     
@@ -331,7 +336,7 @@ impl UpsertQuickStream {
         senders
     }
 
-    fn init_senders<T>(&self, tx_count: &mut i64) -> HashMap<usize, Vec<UpsertData<T>>> where T: Upsert<T> + Clone + Send + 'static {
+    fn init_senders<T>(&self, tx_count: &mut i64) -> HashMap<usize, Vec<UpsertData<T>>> where T: MultiTableUpsert<T> + Clone + Send + 'static {
         trace!("{}: creating sender map of capacity 11", self.name);
         let mut sender_map = HashMap::with_capacity(11);
         
@@ -369,7 +374,7 @@ impl UpsertQuickStream {
         sender_map
     }
 
-    async fn push_to_handle<T>(&self, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, vec_data: Vec<Vec<T>>, tx_count: &mut i64) where T: Upsert<T> + Clone + Send + 'static {
+    async fn push_to_handle<T>(&self, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, vec_data: Vec<Vec<T>>, tx_count: &mut i64) where T: MultiTableUpsert<T> + Clone + Send + 'static {
         for data in vec_data {
             let k = data.len();
             self.handle_n(data,
@@ -379,7 +384,7 @@ impl UpsertQuickStream {
         }
     }
 
-    async fn handle_n<T>(&self, data: Vec<T>, senders: &mut Vec<UpsertData<T>>, tx_count: &mut i64, type_: usize) where T: Upsert<T> + Clone + Send + 'static {
+    async fn handle_n<T>(&self, data: Vec<T>, senders: &mut Vec<UpsertData<T>>, tx_count: &mut i64, type_: usize) where T: MultiTableUpsert<T> + Clone + Send + 'static {
         trace!("{}: handeling data started", self.name);
         trace!("{}: sorting senders by capacity to get the channel with highest capacity", self.name);
         senders.sort_by(|x, y| y.tx.capacity().cmp(&x.tx.capacity()));
@@ -451,7 +456,7 @@ impl UpsertQuickStream {
         }
     }
 
-    fn re_balance_sender<T>(&self, senders: &mut Vec<UpsertData<T>>, init_limit: usize, tx_count: &mut i64, type_: usize) -> bool where T: Upsert<T> + Clone + Send + 'static {
+    fn re_balance_sender<T>(&self, senders: &mut Vec<UpsertData<T>>, init_limit: usize, tx_count: &mut i64, type_: usize) -> bool where T: MultiTableUpsert<T> + Clone + Send + 'static {
 
         trace!("{}: rebalancing senders of type {}", self.name, type_);
 
@@ -485,7 +490,7 @@ impl UpsertQuickStream {
         senders.len() != start_senders
     }
 
-    fn rebalance_senders<T>(&self, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, tx_count: &mut i64) where T: Upsert<T> + Clone + Send + 'static {
+    fn rebalance_senders<T>(&self, senders: &mut HashMap<usize, Vec<UpsertData<T>>>, tx_count: &mut i64) where T: MultiTableUpsert<T> + Clone + Send + 'static {
         trace!("{}: rebalancing database connections", self.name);
         let mut rebalanced = false;
         senders.iter_mut().for_each(|(sender_type, sender)| {
@@ -512,7 +517,7 @@ impl UpsertQuickStream {
         }
     }
 
-    fn print_sender_status<T>(&self, senders: &HashMap<usize, Vec<UpsertData<T>>>, tx_count: &i64) where T: Upsert<T> + Clone + Send + 'static {
+    fn print_sender_status<T>(&self, senders: &HashMap<usize, Vec<UpsertData<T>>>, tx_count: &i64) where T: MultiTableUpsert<T> + Clone + Send + 'static {
         let total_senders_percentage = (*tx_count * 100) as f64 / self.max_con_count as f64;
         info!(" {}: Current Senders (Database Connections) configuration
                 SENDER          AMOUNT
@@ -550,166 +555,262 @@ impl UpsertQuickStream {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(dead_code)]
+mod test{
+    use std::{collections::HashMap, time::Duration};
+
     use async_trait::async_trait;
-    use chrono::{DateTime, NaiveDateTime, Utc};
-    use tokio_postgres::{Client, Error, Statement};
+    use chrono::NaiveDateTime;
+    use tokio::{sync::mpsc, time};
+    use tokio_postgres::{types::ToSql, Client, Error, Statement};
+    use tokio_util::sync::CancellationToken;
 
-    use crate::{builder, introduce_lag, remove_upsert_duplicates, split_vec, split_vec_by_given};
+    use crate::{builder::{support::{MultiTableQueryHolder, QueryHolder}, QuickStreamBuilder}, upsert::{multi_table_upsert::MultiTableUpsert, Upsert}};
 
-    use super::Upsert;
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test1 {
+        id: i64,
+        comment: String
+    }
 
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    struct MockData {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test2 {
+        id: i64,
+        comment: String
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test {
         id: i64,
         modified_date: NaiveDateTime,
+        table: String,
+        test1: Option<Test1>,
+        test2: Option<Test2>
+    }
+
+    impl MultiTableUpsert<Self> for Test {
+        fn table(&self) -> String {
+            self.table.clone()
+        }
+
+        fn tables() -> Vec<String> {
+            vec![String::from("test1"), String::from("test2")]
+        }
     }
 
     #[async_trait]
-    impl Upsert<MockData> for MockData {
+    impl Upsert<Test> for Test {
         async fn upsert(
-            _client: &Client,
-            data: Vec<MockData>,
-            _statement: &Statement,
-            _thread_id: i64,
+            client: &Client,
+            data: Vec<Test>,
+            statement: &Statement,
+            thread_id: i64,
         ) -> Result<u64, Error> {
-            println!("data received, amount : {}", data.len());
-            Ok(1)
-        }
+            println!("data received, data: {:#?}, {}", data, thread_id);
+            let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+
+            if data.first().unwrap().table == "test1" {
+                for d in data.iter() {
+                    params.push(&d.id);
+                    params.push(&d.test1.as_ref().unwrap().comment);
+                }
+            } else {
+                for d in data.iter() {
+                    params.push(&d.id);
+                    params.push(&d.test2.as_ref().unwrap().comment);
+                }
+            }
         
-        fn pkey(&self) -> i64 {
-            self.id
+            client.execute(statement, &params).await.unwrap();
+            Ok(1)
         }
 
         fn modified_date(&self) -> NaiveDateTime {
             self.modified_date
         }
+
+        fn pkey(&self) -> i64 {
+            self.id
+        }
     }
 
+    #[ignore = "only works with a database connection"]
     #[tokio::test]
-    async fn test_remove_duplicates() {
-        let mut data = vec![
-            MockData { id: 1, modified_date: DateTime::from_timestamp(1627847280, 0).unwrap().naive_utc() },
-            MockData { id: 1, modified_date: DateTime::from_timestamp(1627847281, 0).unwrap().naive_utc() },
-            MockData { id: 2, modified_date: DateTime::from_timestamp(1627847282, 0).unwrap().naive_utc() },
-        ];
+    async fn test_db() {
+        let mut quick_stream_builder = QuickStreamBuilder::default();
 
-        remove_upsert_duplicates(&mut data);
-        assert_eq!(data.len(), 2);
-        assert_eq!(data[0].id, 2);
-        assert_eq!(data[1].id, 1);
+        let cancellation_token = CancellationToken::new();
+        let mut db_config = tokio_postgres::Config::new();
+        db_config.host("127.0.0.1")
+        .user("unit_test")
+        .password("production")
+        .dbname("unit_test_db")
+        .port(5432);
+
+        let mut test1_queries = QueryHolder::default();
+        test1_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test1_queries.set_n(2, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(3, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(4, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(5, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(6, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(7, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(8, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(9, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(10, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(100, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        let mut test2_queries = QueryHolder::default();
+
+        test2_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test2_queries.set_n(2, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(3, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(4, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(5, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(6, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(7, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(8, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(9, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(10, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(100, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+
+        let mut query_holders = HashMap::with_capacity(2);
+        query_holders.insert(String::from("test1"), test1_queries);
+        query_holders.insert(String::from("test2"), test2_queries);
+
+        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
+
+        quick_stream_builder.cancellation_tocken(cancellation_token)
+        .max_connection_count(5)
+        .buffer_size(10)
+        .single_digits(2)
+        .tens(2)
+        .hundreds(1)
+        .db_config(db_config)
+        .multi_table_queries(multi_table_query_holder)
+        .max_records_per_cycle_batch(10)
+        .introduced_lag_cycles(2)
+        .introduced_lag_in_millies(100)
+        .connection_creation_threshold(50.0)
+        .print_connection_configuration();
+
+        let multi_table_upsert_quick_stream = quick_stream_builder.build_multi_part_upsert();
+
+        let db_client = multi_table_upsert_quick_stream.get_db_client().await;
+
+        let _ = db_client.prepare("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2").await.unwrap();
+        
     }
 
-    #[test]
-    fn test_split_vec() {
-        let data = (0..110).map(|i| MockData { id: i, modified_date: DateTime::from_timestamp(1627847280, 0).unwrap().naive_utc() }).collect::<Vec<_>>();
-
-        let result = split_vec(data);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].len(), 100);
-        assert_eq!(result[1].len(), 10);
-    }
-
+    #[ignore = "only works with a database connection"]
     #[tokio::test]
-    async fn test_introduce_lag() {
-        let start = std::time::Instant::now();
-        introduce_lag(100).await;
-        let duration = start.elapsed();
-        assert!(duration.as_millis() >= 100);
-    }
+    async fn test_functionality() {
+        let mut quick_stream_builder = QuickStreamBuilder::default();
 
-    #[tokio::test]
-    async fn test_init_sender() {
-        let builder = builder::tests::test_builder();
-        let processor = builder.build_update();
+        let cancellation_token = CancellationToken::new();
+        let mut db_config = tokio_postgres::Config::new();
+        db_config.host("127.0.0.1")
+        .user("unit_test")
+        .password("production")
+        .dbname("unit_test_db")
+        .port(5432);
 
-        let n = 7;
-        let count = 10;
-        let mut tx_count = 90;
-        let original_tx_count = tx_count.to_owned();
-        let type_ = 7;
-        let sender = processor.init_sender::<MockData>(n, count, &mut tx_count, type_);
+        let mut test1_queries = QueryHolder::default();
+        test1_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
 
-        assert_eq!(tx_count, 100);
-        assert_eq!(sender.len(), 10);
-        assert_eq!(sender.get(0).unwrap().type_, type_);
-        assert_eq!(sender.get(2).unwrap().id, original_tx_count + 2);
-    }
+        //Adding just for testing purposes
+        test1_queries.set_n(2, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(3, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(4, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(5, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(6, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(7, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(8, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(9, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(10, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(100, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
 
-    #[tokio::test]
-    async fn test_init_senders() {
-        let builder = builder::tests::test_builder();
-        let processor = builder.build_update();
+        let mut test2_queries = QueryHolder::default();
 
-        let mut tx_count = 0;
-        let senders = processor.init_senders::<MockData>(&mut tx_count);
+        test2_queries.set_n(1, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
 
-        assert_eq!(senders.len(), 11);
-        assert_eq!(senders.get(&10).unwrap().len(), 12);
-        assert_eq!(senders.get(&100).unwrap().len(), 1);
+        //Adding just for testing purposes
+        test2_queries.set_n(2, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(3, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(4, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(5, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(6, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(7, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(8, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(9, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(10, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(100, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
 
-        assert_eq!(senders.get(&3).unwrap().len(), 2);
-        assert_eq!(senders.get(&5).unwrap().get(0).unwrap().type_, 5);
-        assert_eq!(senders.get(&6).unwrap().get(0).unwrap().id, 10);
-    
-        assert_eq!(tx_count, 31); // 2*9 (single digits) + 12 (tens) + 1 (hundreds) = 31
-    }
 
-    #[test]
-    fn test_split_vec_by_given() {
-        let data: Vec<MockData> = (0..250).map(|i| MockData { id: i, modified_date: Utc::now().naive_utc() }).collect();
-        let result = split_vec_by_given(data.clone(), 2, 5, 0);
+        let mut query_holders = HashMap::with_capacity(2);
+        query_holders.insert(String::from("test1"), test1_queries);
+        query_holders.insert(String::from("test2"), test2_queries);
 
-        assert_eq!(result.len(), 7);
-        assert_eq!(result[0].len(), 100);
-        assert_eq!(result[1].len(), 100);
-        assert_eq!(result[2].len(), 10);
-        assert_eq!(result[3].len(), 10);
-        assert_eq!(result[4].len(), 10);
-        assert_eq!(result[5].len(), 10);
-        assert_eq!(result[6].len(), 10);
+        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
 
-        // Ensure the elements are as expected
-        assert_eq!(result[0][0].id, 0);
-        assert_eq!(result[0][99].id, 99);
-        assert_eq!(result[1][0].id, 100);
-        assert_eq!(result[1][99].id, 199);
-        assert_eq!(result[6][0].id, 240);
-        assert_eq!(result[6][9].id, 249);
-    }
+        quick_stream_builder.cancellation_tocken(cancellation_token)
+        .max_connection_count(5)
+        .buffer_size(10)
+        .single_digits(2)
+        .tens(2)
+        .hundreds(1)
+        .db_config(db_config)
+        .multi_table_queries(multi_table_query_holder)
+        .max_records_per_cycle_batch(10)
+        .introduced_lag_cycles(2)
+        .introduced_lag_in_millies(100)
+        .connection_creation_threshold(50.0)
+        .print_connection_configuration();
 
-    #[test]
-    fn test_split_vec_2() {
-        let data: Vec<MockData> = (0..250).map(|i| MockData { id: i, modified_date: Utc::now().naive_utc() }).collect();
-        let result = split_vec(data.clone());
+        let multi_table_upsert_quick_stream = quick_stream_builder.build_multi_part_upsert();
 
-        assert_eq!(result.len(), 7);
-        assert_eq!(result[0].len(), 100);
-        assert_eq!(result[1].len(), 100);
-        assert_eq!(result[2].len(), 10);
-        assert_eq!(result[3].len(), 10);
-        assert_eq!(result[4].len(), 10);
-        assert_eq!(result[5].len(), 10);
-        assert_eq!(result[6].len(), 10);
+        let (tx, rx) = mpsc::channel::<Vec<Test>>(10);
 
-        // Ensure the elements are as expected
-        assert_eq!(result[0][0].id, 0);
-        assert_eq!(result[0][99].id, 99);
-        assert_eq!(result[1][0].id, 100);
-        assert_eq!(result[1][99].id, 199);
-        assert_eq!(result[6][0].id, 240);
-        assert_eq!(result[6][9].id, 249);
-    }
+        let _ = tokio::spawn(async move {
+            multi_table_upsert_quick_stream.run(rx).await;
+            66u8
+        });
 
-    #[test]
-    fn test_split_vec_edge_cases() {
-        let empty_data: Vec<MockData> = vec![];
-        let result = split_vec(empty_data);
-        assert!(result.is_empty());
+        let test1 = Test1 {
+            id: 3,
+            comment: String::from("Test Data 1 (re)")
+        };
 
-        let single_data: Vec<MockData> = vec![MockData { id: 1, modified_date: Utc::now().naive_utc() }];
-        let result = split_vec(single_data.clone());
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], single_data);
+        let test2 = Test2 {
+            id: 5,
+            comment: String::from("Test Data 2 (re)")
+        };
+
+        let test_1 = Test {
+            id: test1.id,
+            modified_date: chrono::Utc::now().naive_utc(),
+            table: String::from("test1"),
+            test1: Some(test1),
+            test2: None
+        };
+
+        let test_2 = Test {
+            id: test2.id,
+            modified_date: chrono::Utc::now().naive_utc(),
+            table: String::from("test2"),
+            test1: None,
+            test2: Some(test2)
+        };
+
+        let data = vec![test_1, test_2];
+
+        tx.send(data).await.unwrap();
+
+        time::sleep(Duration::from_secs(10)).await;
     }
 }
