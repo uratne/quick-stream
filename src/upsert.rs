@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use futures::future::BoxFuture;
 use log::{error, info, trace, warn};
 use native_tls::{Certificate, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
@@ -22,12 +21,12 @@ pub trait Upsert<T>: Send + Sync
 where
     T: Clone + Send + Sync,
 {
-    fn upsert(
+    async fn upsert(
         client: &Client,
         data: Vec<T>,
         statement: &Statement,
         thread_id: i64,
-    ) -> BoxFuture<'static, Result<u64, Error>>;
+    ) -> Result<u64, Error>;
 
     fn modified_date(&self) -> NaiveDateTime;
     fn pkey(&self) -> i64;
@@ -554,7 +553,6 @@ impl UpsertQuickStream {
 mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, NaiveDateTime, Utc};
-    use futures::future::BoxFuture;
     use tokio_postgres::{Client, Error, Statement};
 
     use crate::{builder, introduce_lag, remove_upsert_duplicates, split_vec, split_vec_by_given};
@@ -569,14 +567,14 @@ mod tests {
 
     #[async_trait]
     impl Upsert<MockData> for MockData {
-        fn upsert(
+        async fn upsert(
             _client: &Client,
             data: Vec<MockData>,
             _statement: &Statement,
             _thread_id: i64,
-        ) -> BoxFuture<'static, Result<u64, Error>> {
+        ) -> Result<u64, Error> {
             println!("data received, amount : {}", data.len());
-            Box::pin(async { Ok(1) })
+            Ok(1)
         }
         
         fn pkey(&self) -> i64 {

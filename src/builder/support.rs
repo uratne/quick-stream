@@ -89,6 +89,23 @@ impl QueryHolder {
             _ => panic!("Invalid query number: {}", n),
         }
     }
+
+    pub fn set_n(&mut self, n: usize, query: String) {
+        match n {
+            1 => self.one = query,
+            2 => self.two = query,
+            3 => self.three = query,
+            4 => self.four = query,
+            5 => self.five = query,
+            6 => self.six = query,
+            7 => self.seven = query,
+            8 => self.eight = query,
+            9 => self.nine = query,
+            10 => self.ten = query,
+            100 => self.hundred = query,
+            _ => panic!("Invalid query number: {}", n),
+        }
+    }
 }
 
 pub struct QueryHolderBuilder {

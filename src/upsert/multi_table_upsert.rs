@@ -553,3 +553,264 @@ impl MultiTableUpsertQuickStream {
         total_senders_percentage)
     }
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod test{
+    use std::{collections::HashMap, time::Duration};
+
+    use async_trait::async_trait;
+    use chrono::NaiveDateTime;
+    use tokio::{sync::mpsc, time};
+    use tokio_postgres::{types::ToSql, Client, Error, Statement};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::{builder::{support::{MultiTableQueryHolder, QueryHolder}, QuickStreamBuilder}, upsert::{multi_table_upsert::MultiTableUpsert, Upsert}};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test1 {
+        id: i64,
+        comment: String
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test2 {
+        id: i64,
+        comment: String
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Test {
+        id: i64,
+        modified_date: NaiveDateTime,
+        table: String,
+        test1: Option<Test1>,
+        test2: Option<Test2>
+    }
+
+    impl MultiTableUpsert<Self> for Test {
+        fn table(&self) -> String {
+            self.table.clone()
+        }
+
+        fn tables() -> Vec<String> {
+            vec![String::from("test1"), String::from("test2")]
+        }
+    }
+
+    #[async_trait]
+    impl Upsert<Test> for Test {
+        async fn upsert(
+            client: &Client,
+            data: Vec<Test>,
+            statement: &Statement,
+            thread_id: i64,
+        ) -> Result<u64, Error> {
+            println!("data received, data: {:#?}, {}", data, thread_id);
+            let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+
+            if data.first().unwrap().table == "test1" {
+                for d in data.iter() {
+                    params.push(&d.id);
+                    params.push(&d.test1.as_ref().unwrap().comment);
+                }
+            } else {
+                for d in data.iter() {
+                    params.push(&d.id);
+                    params.push(&d.test2.as_ref().unwrap().comment);
+                }
+            }
+        
+            client.execute(statement, &params).await.unwrap();
+            Ok(1)
+        }
+
+        fn modified_date(&self) -> NaiveDateTime {
+            self.modified_date
+        }
+
+        fn pkey(&self) -> i64 {
+            self.id
+        }
+    }
+
+    #[ignore = "only works with a database connection"]
+    #[tokio::test]
+    async fn test_db() {
+        let mut quick_stream_builder = QuickStreamBuilder::default();
+
+        let cancellation_token = CancellationToken::new();
+        let mut db_config = tokio_postgres::Config::new();
+        db_config.host("127.0.0.1")
+        .user("unit_test")
+        .password("production")
+        .dbname("unit_test_db")
+        .port(5432);
+
+        let mut test1_queries = QueryHolder::default();
+        test1_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test1_queries.set_n(2, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(3, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(4, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(5, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(6, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(7, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(8, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(9, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(10, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(100, String::from("insert into test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        let mut test2_queries = QueryHolder::default();
+
+        test2_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test2_queries.set_n(2, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(3, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(4, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(5, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(6, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(7, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(8, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(9, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(10, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(100, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+
+        let mut query_holders = HashMap::with_capacity(2);
+        query_holders.insert(String::from("test1"), test1_queries);
+        query_holders.insert(String::from("test2"), test2_queries);
+
+        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
+
+        quick_stream_builder.cancellation_tocken(cancellation_token)
+        .max_connection_count(5)
+        .buffer_size(10)
+        .single_digits(2)
+        .tens(2)
+        .hundreds(1)
+        .db_config(db_config)
+        .multi_table_queries(multi_table_query_holder)
+        .max_records_per_cycle_batch(10)
+        .introduced_lag_cycles(2)
+        .introduced_lag_in_millies(100)
+        .connection_creation_threshold(50.0)
+        .print_connection_configuration();
+
+        let multi_table_upsert_quick_stream = quick_stream_builder.build_multi_part_upsert();
+
+        let db_client = multi_table_upsert_quick_stream.get_db_client().await;
+
+        let _ = db_client.prepare("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2").await.unwrap();
+        
+    }
+
+    #[ignore = "only works with a database connection"]
+    #[tokio::test]
+    async fn test_functionality() {
+        let mut quick_stream_builder = QuickStreamBuilder::default();
+
+        let cancellation_token = CancellationToken::new();
+        let mut db_config = tokio_postgres::Config::new();
+        db_config.host("127.0.0.1")
+        .user("unit_test")
+        .password("production")
+        .dbname("unit_test_db")
+        .port(5432);
+
+        let mut test1_queries = QueryHolder::default();
+        test1_queries.set_n(1, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test1_queries.set_n(2, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(3, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(4, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(5, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(6, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(7, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(8, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(9, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(10, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test1_queries.set_n(100, String::from("insert into quick_stream.test1 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        let mut test2_queries = QueryHolder::default();
+
+        test2_queries.set_n(1, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+        //Adding just for testing purposes
+        test2_queries.set_n(2, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(3, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(4, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(5, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(6, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(7, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(8, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(9, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(10, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+        test2_queries.set_n(100, String::from("insert into quick_stream.test2 (id, comment) values ($1, $2) on conflict (id) do update set comment = $2"));
+
+
+        let mut query_holders = HashMap::with_capacity(2);
+        query_holders.insert(String::from("test1"), test1_queries);
+        query_holders.insert(String::from("test2"), test2_queries);
+
+        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
+
+        quick_stream_builder.cancellation_tocken(cancellation_token)
+        .max_connection_count(5)
+        .buffer_size(10)
+        .single_digits(2)
+        .tens(2)
+        .hundreds(1)
+        .db_config(db_config)
+        .multi_table_queries(multi_table_query_holder)
+        .max_records_per_cycle_batch(10)
+        .introduced_lag_cycles(2)
+        .introduced_lag_in_millies(100)
+        .connection_creation_threshold(50.0)
+        .print_connection_configuration();
+
+        let multi_table_upsert_quick_stream = quick_stream_builder.build_multi_part_upsert();
+
+        let (tx, rx) = mpsc::channel::<Vec<Test>>(10);
+
+        let _ = tokio::spawn(async move {
+            multi_table_upsert_quick_stream.run(rx).await;
+            66u8
+        });
+
+        let test1 = Test1 {
+            id: 3,
+            comment: String::from("Test Data 1 (re)")
+        };
+
+        let test2 = Test2 {
+            id: 5,
+            comment: String::from("Test Data 2 (re)")
+        };
+
+        let test_1 = Test {
+            id: test1.id,
+            modified_date: chrono::Utc::now().naive_utc(),
+            table: String::from("test1"),
+            test1: Some(test1),
+            test2: None
+        };
+
+        let test_2 = Test {
+            id: test2.id,
+            modified_date: chrono::Utc::now().naive_utc(),
+            table: String::from("test2"),
+            test1: None,
+            test2: Some(test2)
+        };
+
+        let data = vec![test_1, test_2];
+
+        tx.send(data).await.unwrap();
+
+        time::sleep(Duration::from_secs(10)).await;
+    }
+}

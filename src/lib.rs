@@ -76,7 +76,6 @@ mod tests {
     use async_trait::async_trait;
     use tokio::time;
     use tokio_postgres::{Client, Statement, Error};
-    use futures::future::BoxFuture;
     use tokio_util::sync::CancellationToken;
 
     #[derive(Clone, Debug)]
@@ -87,14 +86,14 @@ mod tests {
 
     #[async_trait]
     impl Upsert<MockData> for MockData {
-        fn upsert(
+        async fn upsert(
             _client: &Client,
             data: Vec<MockData>,
             _statement: &Statement,
             _thread_id: i64,
-        ) -> BoxFuture<'static, Result<u64, Error>> {
+        ) -> Result<u64, Error> {
             println!("data received, amount : {}", data.len());
-            Box::pin(async { Ok(1) })
+            Ok(1)
         }
 
         fn modified_date(&self) -> NaiveDateTime {
