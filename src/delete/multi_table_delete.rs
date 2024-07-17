@@ -9,7 +9,10 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls};
 use tokio_util::sync::CancellationToken;
 
-use crate::{builder::support::MultiTableDeleteQueryHolder, introduce_lag, shutdown_service};
+#[cfg(all(unix, feature = "unix-signals"))]
+use crate::shutdown_service;
+
+use crate::{builder::support::MultiTableDeleteQueryHolder, introduce_lag};
 
 use super::Delete;
 
