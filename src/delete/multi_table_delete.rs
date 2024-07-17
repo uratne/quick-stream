@@ -15,6 +15,7 @@ use super::Delete;
 
 mod support;
 
+
 #[async_trait]
 pub trait MultiTableDelete<T>: Send + Sync + Delete<T>
 where
@@ -445,3 +446,13 @@ impl MultiTableDeleteQuickStream {
 
 
 }
+
+
+#[cfg(test)]
+mod test {
+
+
+
+}
+
+
