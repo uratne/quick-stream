@@ -36,13 +36,3 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --release --verbose --features "windows-signals"
-      
-
-  unit-test:
-
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: cargo test --package quick_stream --lib

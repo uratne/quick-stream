@@ -8,6 +8,8 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls, Statement};
 use tokio_util::sync::CancellationToken;
 
+pub mod multi_table_delete;
+
 #[cfg(all(unix, feature = "unix-signals"))]
 use crate::shutdown_service;
 

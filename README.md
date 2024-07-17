@@ -1,9 +1,25 @@
-***INCOMPLETE***
-
 # Quick Stream
-[![Build](https://github.com/uratne/quick-stream/actions/workflows/build.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/build.yml) [![UnitTests](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml) [![codecov](https://codecov.io/gh/uratne/quick-stream/graph/badge.svg?token=NBF0J189WO)](https://codecov.io/gh/uratne/quick-stream) ![Rust Badge](https://img.shields.io/badge/Rust-1.79.0-000?logo=rust&logoColor=fff&style=flat)
+[![Build](https://github.com/uratne/quick-stream/actions/workflows/build.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/build.yml) [![UnitTests](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/uratne/quick-stream/actions/workflows/unit-tests.yml)![Rust Badge](https://img.shields.io/badge/Rust-1.79.0-000?logo=rust&logoColor=fff&style=flat)
 
 * Quick Stream is a Rust-based solution designed to efficiently handle data upsert operations with a focus on performance and scalability. Utilizing asynchronous programming and a dynamic sender-receiver model, Quick Stream aims to streamline the process of synchronizing large datasets with minimal overhead.
+
+## Files Overview
+
+- **multi_table_upsert_support.rs**: Contains support functions and utilities for performing multi-table upsert operations.
+- **multi_table_upsert.rs**: Implements the main functionality for multi-table upserts.
+- **multi_table_delete_support.rs**: Provides support functions for multi-table delete operations.
+- **builder_support.rs**: Contains utilities and support functions for building database queries.
+- **multi_table_delete.rs**: Implements the main functionality for multi-table delete operations.
+- **support.rs**: General support functions used across various modules.
+- **upsert.rs**: Contains the core upsert logic.
+- **shutdown_service.rs**: Implements functionality to safely shut down services.
+- **lib.rs**: Main library file that integrates all modules.
+- **delete.rs**: Contains the core delete logic.
+- **builder.rs**: Implements query builder functionality.
+
+## Crate
+
+This library is available as a crate on [crates.io](https://crates.io/crates/quick_stream). You can include it in your `Cargo.toml`:
 
 ## Getting Started
 
@@ -17,7 +33,7 @@
 1. Clone the repository:
 
 ```sh
-git clone https://github.com/yourusername/quick_sync.git
+git clone https://github.com/uratne/quick-stream
 cd quick_sync
 ```
 
@@ -26,7 +42,9 @@ cd quick_sync
 ```sh
 cargo test --lib
 ```
-## Usage
+## Features
+1. unix-signals ( will enable graceful shutdown job on unix systems )
+2. windows-signals ( will enable graceful shutdown job on windows systems )
 
 ## Roadmap
 See the [ROADMAP](ROADMAP.md)

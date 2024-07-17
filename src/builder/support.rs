@@ -2,31 +2,40 @@ use std::collections::HashMap;
 
 use tokio_postgres::{Client, Statement};
 
+
+/// A structure to hold delete queries for multiple tables.
 #[derive(Debug, Clone, Default)]
-pub struct MultiTableQueryHolder {
-    query_map: HashMap<String, QueryHolder>
-}
-
-impl MultiTableQueryHolder {
-    pub fn new(query_map: HashMap<String, QueryHolder>) -> MultiTableQueryHolder {
-        MultiTableQueryHolder { query_map }
-    }
-
-    pub fn get(&self, n: &usize) -> MultiTableSingleQueryHolder {
-        let mut query_map = HashMap::new();
-        for (key, value) in self.query_map.iter() {
-            query_map.insert(key.clone(), value.get(n));
-        }
-        MultiTableSingleQueryHolder { query_map }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct MultiTableSingleQueryHolder {
+pub struct MultiTableDeleteQueryHolder {
     query_map: HashMap<String, String>
 }
 
-impl MultiTableSingleQueryHolder {
+impl MultiTableDeleteQueryHolder {
+    /// Creates a new `MultiTableDeleteQueryHolder` with the given query map.
+    ///
+    /// # Arguments
+    ///
+    /// * `query_map` - A `HashMap` where keys are table names and values are delete queries.
+    ///
+    /// # Returns
+    ///
+    /// * `MultiTableDeleteQueryHolder` - A new instance of the struct.
+    pub fn new(query_map: HashMap<String, String>) -> MultiTableDeleteQueryHolder {
+        MultiTableDeleteQueryHolder { query_map }
+    }
+
+    /// Retrieves the delete query for a specific table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table for which to retrieve the query.
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The delete query for the specified table.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the query for the specified table is not found.
     pub fn get(&self, table_name: String) -> String {
         match self.query_map.get(&table_name) {
             Some(query) => query.clone(),
@@ -34,6 +43,19 @@ impl MultiTableSingleQueryHolder {
         }
     }
 
+    /// Prepares all delete queries and returns a map of prepared statements.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - A reference to a `tokio_postgres::Client` to prepare the statements.
+    ///
+    /// # Returns
+    ///
+    /// * `HashMap<String, Statement>` - A map where keys are table names and values are prepared statements.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if preparing any of the statements fails.
     pub async fn prepare(&self, client: &Client) -> HashMap<String, Statement> {
         let mut statement_map = HashMap::new();
         for (key, value) in self.query_map.iter() {
@@ -44,6 +66,97 @@ impl MultiTableSingleQueryHolder {
     }
 }
 
+
+/// A structure to hold upsert queries for multiple tables.
+#[derive(Debug, Clone, Default)]
+pub struct MultiTableUpsertQueryHolder {
+    query_map: HashMap<String, QueryHolder>
+}
+
+impl MultiTableUpsertQueryHolder {
+    /// Creates a new `MultiTableUpsertQueryHolder` with the given query map.
+    ///
+    /// # Arguments
+    ///
+    /// * `query_map` - A `HashMap` where keys are table names and values are `QueryHolder` instances.
+    ///
+    /// # Returns
+    ///
+    /// * `MultiTableUpsertQueryHolder` - A new instance of the struct.
+    pub fn new(query_map: HashMap<String, QueryHolder>) -> MultiTableUpsertQueryHolder {
+        MultiTableUpsertQueryHolder { query_map }
+    }
+
+    /// Retrieves a `MultiTableSingleQueryHolder` for a specific query number.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - A reference to the query number to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// * `MultiTableSingleQueryHolder` - A new instance of the struct with queries for the specified number.
+    pub fn get(&self, n: &usize) -> MultiTableSingleQueryHolder {
+        let mut query_map = HashMap::new();
+        for (key, value) in self.query_map.iter() {
+            query_map.insert(key.clone(), value.get(n));
+        }
+        MultiTableSingleQueryHolder { query_map }
+    }
+}
+
+/// A structure to hold a single query for multiple tables.
+#[derive(Debug, Clone, Default)]
+pub struct MultiTableSingleQueryHolder {
+    query_map: HashMap<String, String>
+}
+
+impl MultiTableSingleQueryHolder {
+    /// Retrieves the query for a specific table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table for which to retrieve the query.
+    ///
+    /// # Returns
+    ///
+    /// * `String` - The query for the specified table.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the query for the specified table is not found.
+    pub fn get(&self, table_name: String) -> String {
+        match self.query_map.get(&table_name) {
+            Some(query) => query.clone(),
+            None => panic!("Query Not Found For Table: {}", table_name),
+        }
+    }
+
+    /// Prepares all queries and returns a map of prepared statements.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - A reference to a `tokio_postgres::Client` to prepare the statements.
+    ///
+    /// # Returns
+    ///
+    /// * `HashMap<String, Statement>` - A map where keys are table names and values are prepared statements.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if preparing any of the statements fails.
+    pub async fn prepare(&self, client: &Client) -> HashMap<String, Statement> {
+        let mut statement_map = HashMap::new();
+        for (key, value) in self.query_map.iter() {
+            let statement = client.prepare(value).await.unwrap();
+            statement_map.insert(key.clone(), statement);
+        }
+        statement_map
+    }
+}
+
+
+/// A structure to hold multiple upsert queries.
 #[derive(Debug, Clone, Default)]
 pub struct QueryHolder {
     one: String,
@@ -72,7 +185,7 @@ impl QueryHolder {
     ///
     /// # Panics
     ///
-    /// This function will panic if `n` is not a valid query number (1-11) or 100.
+    /// This function will panic if `n` is not a valid query number (1-10) or 100.
     pub(crate) fn get(&self, n: &usize) -> String {
         match n {
             1 => self.one.to_owned(),
@@ -90,6 +203,16 @@ impl QueryHolder {
         }
     }
 
+    /// Sets the query string for a specific number `n`.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - A positive integer representing the query to set.
+    /// * `query` - The query string to set.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if `n` is not a valid query number (1-10) or 100.
     pub fn set_n(&mut self, n: usize, query: String) {
         match n {
             1 => self.one = query,
@@ -108,6 +231,7 @@ impl QueryHolder {
     }
 }
 
+/// A builder for the `QueryHolder` struct.
 pub struct QueryHolderBuilder {
     one: Option<String>,
     two: Option<String>,
@@ -123,6 +247,11 @@ pub struct QueryHolderBuilder {
 }
 
 impl QueryHolderBuilder {
+    /// Creates a new `QueryHolderBuilder`.
+    ///
+    /// # Returns
+    ///
+    /// * `QueryHolderBuilder` - A new instance of the builder.
     pub fn new() -> QueryHolderBuilder {
         QueryHolderBuilder {
             one: None,
@@ -139,61 +268,169 @@ impl QueryHolderBuilder {
         }
     }
 
+    /// Sets the value for the `one` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_one(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.one = Some(value);
         self
     }
 
+    /// Sets the value for the `two` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_two(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.two = Some(value);
         self
     }
 
+    /// Sets the value for the `three` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_three(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.three = Some(value);
         self
     }
 
+    /// Sets the value for the `four` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_four(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.four = Some(value);
         self
     }
 
+    /// Sets the value for the `five` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_five(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.five = Some(value);
         self
     }
 
+    /// Sets the value for the `six` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_six(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.six = Some(value);
         self
     }
 
+    /// Sets the value for the `seven` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_seven(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.seven = Some(value);
         self
     }
 
+    /// Sets the value for the `eight` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_eight(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.eight = Some(value);
         self
     }
 
+    /// Sets the value for the `nine` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_nine(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.nine = Some(value);
         self
     }
 
+    /// Sets the value for the `ten` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_ten(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.ten = Some(value);
         self
     }
 
+    /// Sets the value for the `hundred` query.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The query string to set.
+    ///
+    /// # Returns
+    ///
+    /// * `&mut QueryHolderBuilder` - A mutable reference to the builder.
     pub fn set_hundred(&mut self, value: String) -> &mut QueryHolderBuilder {
         self.hundred = Some(value);
         self
     }
 
+    /// Builds the `QueryHolder` from the set values.
+    ///
+    /// # Returns
+    ///
+    /// * `QueryHolder` - A new instance of the struct.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if any of the query values are not set.
     pub fn build(&self) -> QueryHolder {
         if self.one.is_none()
             || self.two.is_none()

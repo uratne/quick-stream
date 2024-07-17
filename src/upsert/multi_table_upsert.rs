@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(all(unix, feature = "unix-signals"))]
 use crate::shutdown_service;
 
-use crate::{builder::support::{MultiTableQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, split_vec};
+use crate::{builder::support::{MultiTableUpsertQueryHolder, MultiTableSingleQueryHolder}, introduce_lag, split_vec};
 
 pub mod support;
 
@@ -58,7 +58,7 @@ pub struct MultiTableUpsertQuickStream {
     pub(crate) hundreds: usize,
     pub(crate) db_config: tokio_postgres::Config,
     pub(crate) tls: Option<Certificate>,
-    pub(crate) queries: MultiTableQueryHolder,
+    pub(crate) queries: MultiTableUpsertQueryHolder,
     pub(crate) max_records_per_cycle_batch: usize, //a batch = introduced_lag_cycles
     pub(crate) introduced_lag_cycles: usize,
     pub(crate) introduced_lag_in_millies: u64,
@@ -565,7 +565,7 @@ mod test{
     use tokio_postgres::{types::ToSql, Client, Error, Statement};
     use tokio_util::sync::CancellationToken;
 
-    use crate::{builder::{support::{MultiTableQueryHolder, QueryHolder}, QuickStreamBuilder}, upsert::{multi_table_upsert::MultiTableUpsert, Upsert}};
+    use crate::{builder::{support::{MultiTableUpsertQueryHolder, QueryHolder}, QuickStreamBuilder}, upsert::{multi_table_upsert::MultiTableUpsert, Upsert}};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Test1 {
@@ -683,7 +683,7 @@ mod test{
         query_holders.insert(String::from("test1"), test1_queries);
         query_holders.insert(String::from("test2"), test2_queries);
 
-        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
+        let multi_table_query_holder = MultiTableUpsertQueryHolder::new(query_holders);
 
         quick_stream_builder.cancellation_tocken(cancellation_token)
         .max_connection_count(5)
@@ -756,7 +756,7 @@ mod test{
         query_holders.insert(String::from("test1"), test1_queries);
         query_holders.insert(String::from("test2"), test2_queries);
 
-        let multi_table_query_holder = MultiTableQueryHolder::new(query_holders);
+        let multi_table_query_holder = MultiTableUpsertQueryHolder::new(query_holders);
 
         quick_stream_builder.cancellation_tocken(cancellation_token)
         .max_connection_count(5)
