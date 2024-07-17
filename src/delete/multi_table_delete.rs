@@ -9,7 +9,7 @@ use tokio::{sync::mpsc::{self, Receiver, Sender}, task::JoinHandle};
 use tokio_postgres::{Client, Error, NoTls};
 use tokio_util::sync::CancellationToken;
 
-use crate::{builder::support::MultiTableDeleteQueryHolder, introduce_lag};
+use crate::{builder::support::MultiTableDeleteQueryHolder, introduce_lag, shutdown_service};
 
 use super::Delete;
 
@@ -446,13 +446,3 @@ impl MultiTableDeleteQuickStream {
 
 
 }
-
-
-#[cfg(test)]
-mod test {
-
-
-
-}
-
-
