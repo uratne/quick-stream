@@ -50,3 +50,6 @@ cargo test --lib
 See the [ROADMAP](ROADMAP.md)
 
 ### same Cancellation Token Should be used to all of the processors of type QuickStream
+
+## Acknowledgement
+* [Shalinda Ranasinghe](https://github.com/shalinda)
