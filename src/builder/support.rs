@@ -3,13 +3,41 @@ use std::collections::HashMap;
 use tokio_postgres::{Client, Statement};
 
 #[derive(Debug, Clone, Default)]
-pub struct MultiTableQueryHolder {
+pub struct MultiTableDeleteQueryHolder {
+    query_map: HashMap<String, String>
+}
+
+impl MultiTableDeleteQueryHolder {
+    pub fn new(query_map: HashMap<String, String>) -> MultiTableDeleteQueryHolder {
+        MultiTableDeleteQueryHolder { query_map }
+    }
+
+    pub fn get(&self, table_name: String) -> String {
+        match self.query_map.get(&table_name) {
+            Some(query) => query.clone(),
+            None => panic!("Query Not Found For Table: {}", table_name),
+        }
+    }
+
+    pub async fn prepare(&self, client: &Client) -> HashMap<String, Statement> {
+        let mut statement_map = HashMap::new();
+        for (key, value) in self.query_map.iter() {
+            let statement = client.prepare(value).await.unwrap();
+            statement_map.insert(key.clone(), statement);
+        }
+        statement_map
+    }
+}
+
+
+#[derive(Debug, Clone, Default)]
+pub struct MultiTableUpsertQueryHolder {
     query_map: HashMap<String, QueryHolder>
 }
 
-impl MultiTableQueryHolder {
-    pub fn new(query_map: HashMap<String, QueryHolder>) -> MultiTableQueryHolder {
-        MultiTableQueryHolder { query_map }
+impl MultiTableUpsertQueryHolder {
+    pub fn new(query_map: HashMap<String, QueryHolder>) -> MultiTableUpsertQueryHolder {
+        MultiTableUpsertQueryHolder { query_map }
     }
 
     pub fn get(&self, n: &usize) -> MultiTableSingleQueryHolder {
