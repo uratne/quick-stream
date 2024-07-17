@@ -43,18 +43,17 @@ cd quick_sync
 cargo test --lib
 ```
 
-***Same Cancellation Token Should be used to all of the processors of type QuickStream***
-
 ## Features
 1. unix-signals ( will enable graceful shutdown job on unix systems )
 2. windows-signals ( will enable graceful shutdown job on windows systems )
+    ***Same Cancellation Token Should be used to all of the processors of type QuickStream on windows***
 
 ## Roadmap
 See the [ROADMAP](ROADMAP.md)
 
 ## Improvements
 1. More Unit Tests Are Always welcome
-2. Some simple examples have been given as guide
+2. Some simple examples have been given as a guide
 3. For multi tables I have used a composite structure to handle all the tables, It would be nicer if It was done by defining another trait. For my use case this is enough. So I stop here for now. Maybe in future I'll fix this. If someone is willing to help out with this, your help is much appriciated.
 
 
